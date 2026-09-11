@@ -15,7 +15,7 @@ import java.util.Base64
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
-/** Anonymous web requests. API formats are documented in docs/music-sources.md. */
+/** Anonymous web requests. */
 class QqMusicClient : MusicSourceClient {
     override val source = MusicSource.QQ
     override val supportedFields = MetadataField.entries.toSet() - MetadataField.DISC
