@@ -11,8 +11,7 @@ param(
 $context = Get-BuildContext -SdkPath $SdkPath
 $previous = Set-BuildEnvironment -Context $context
 try {
-    if (-not $ApkPath) { $ApkPath = Join-Path $context.Root "apk\MusicTag-v$($context.Version).apk" }
-    $apk = (Resolve-Path -LiteralPath $ApkPath).Path
+    $apk = if ($ApkPath) { (Resolve-Path -LiteralPath $ApkPath).Path } else { Get-ReleaseApk -Context $context }
     $signature = & (Join-Path $context.Jdk 'bin\java.exe') --enable-native-access=ALL-UNNAMED -jar (Join-Path $context.BuildTools 'lib\apksigner.jar') verify --verbose --print-certs $apk
     if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }
     # Public certificate fingerprint from MusicTag-v0.4.1.apk, not a private key or APK checksum.

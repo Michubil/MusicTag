@@ -18,8 +18,8 @@ android {
         applicationId = "top.michubil.musictag"
         minSdk = 35
         targetSdk = 37
-        versionCode = 19
-        versionName = "0.9.4"
+        versionCode = 20
+        versionName = "1.0.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -66,7 +66,7 @@ android {
     }
 
     lint {
-        disable += listOf("ChromeOsAbiSupport", "LockedOrientationActivity", "DiscouragedApi")
+        disable += listOf("ChromeOsAbiSupport", "LockedOrientationActivity", "DiscouragedApi", "NewerVersionAvailable")
         warningsAsErrors = true
     }
 }

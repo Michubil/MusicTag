@@ -143,7 +143,7 @@ class WavCodecTest {
         assertEquals(listOf("Artist A", "Artist B"), WavCodec.readLocalTrack(source).artists)
         assertEquals("Album", WavCodec.readLocalTrack(source).album)
         assertEquals(1_000, written.durationMs)
-        assertEquals(written.durationMs, WavCodec.readDuration(source.inputStream()))
+        assertEquals(written.durationMs, source.inputStream().use(WavCodec::readDuration))
         assertArrayEquals(cover, Id3Codec.frontCoverBytes(WavCodec.read(source).id3Frames))
         assertArrayEquals(audio, source.readRegion(written.audioRegion.offset, written.audioRegion.length))
         assertArrayEquals(junk, source.readChunk("JUNK"))
