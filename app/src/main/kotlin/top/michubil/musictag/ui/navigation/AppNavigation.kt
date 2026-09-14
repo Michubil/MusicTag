@@ -28,12 +28,28 @@ internal object Routes {
     const val Candidates = "files/candidates"
     const val Settings = "settings"
     const val About = "settings/about"
+    const val Albums = "albums"
+    const val Album = "albums/album?id={id}"
 }
 
-internal fun rootRoute(route: String?) = if (route == Routes.Settings || route == Routes.About) Routes.Settings else Routes.Files
+internal fun rootRoute(route: String?, fileWorkRoot: String = Routes.Files) = when (route) {
+    Routes.Settings, Routes.About -> Routes.Settings
+    Routes.Albums, Routes.Album -> Routes.Albums
+    Routes.Options, Routes.Candidates, Routes.Rename, Routes.Editor -> fileWorkRoot
+    else -> Routes.Files
+}
+
+internal fun tabIndex(root: String?) = when (root) {
+    Routes.Albums -> 1
+    Routes.Settings -> 2
+    else -> 0
+}
+
 internal fun isDirectoryRoute(route: String?) = route == Routes.Files || route == Routes.Folder
 internal fun isBrowserRoute(route: String?) = isDirectoryRoute(route) || route == Routes.Search
-internal fun shouldLeaveSearch(route: String?) = isDirectoryRoute(route) || rootRoute(route) == Routes.Settings
+internal fun isFileWorkRoute(route: String?) = isBrowserRoute(route) || route == Routes.Album
+internal fun shouldLeaveSearch(route: String?) =
+    isDirectoryRoute(route) || rootRoute(route) == Routes.Settings || rootRoute(route) == Routes.Albums
 internal enum class TabDecision { Stay, PopToRoot, SwitchRoot }
 
 internal fun browserDirectoryUri(route: String?, rootUri: String?, folderUri: String?): String? = when (route) {
@@ -54,15 +70,19 @@ internal fun BrowserDirectoryEffect(entryId: String?, directoryUri: String?, onD
 internal fun shouldReturnToBrowser(route: String, state: MainUiState): Boolean =
     (route == Routes.Options || route == Routes.Candidates || route == Routes.Rename || route == Routes.Editor) && state.selected.isEmpty() && !state.busy
 
-internal fun tabDecision(current: String, target: String): TabDecision = when {
+internal fun tabDecision(current: String, target: String, fileWorkRoot: String = Routes.Files): TabDecision = when {
     current == target -> TabDecision.Stay
-    rootRoute(current) == target -> TabDecision.PopToRoot
+    rootRoute(current, fileWorkRoot) == target -> TabDecision.PopToRoot
     else -> TabDecision.SwitchRoot
 }
 
-internal fun resolvePageMotion(from: String?, to: String?, isPop: Boolean = false): AppPageMotion {
-    if (rootRoute(from) != rootRoute(to)) {
-        return if (rootRoute(to) == Routes.Settings) AppPageMotion.TabForward else AppPageMotion.TabBackward
+internal fun resolvePageMotion(from: String?, to: String?, isPop: Boolean = false, fileWorkRoot: String = Routes.Files): AppPageMotion {
+    if (rootRoute(from, fileWorkRoot) != rootRoute(to, fileWorkRoot)) {
+        return if (tabIndex(rootRoute(to, fileWorkRoot)) > tabIndex(rootRoute(from, fileWorkRoot))) {
+            AppPageMotion.TabForward
+        } else {
+            AppPageMotion.TabBackward
+        }
     }
     return if (isPop) AppPageMotion.Close else AppPageMotion.Open
 }
@@ -107,15 +127,18 @@ private fun AppNavigation(
     val transitions = rememberAppPageTransitions()
     val lifecycle = entry?.lifecycle?.currentStateAsState()?.value
     var pendingTab by remember { mutableStateOf<Int?>(null) }
+    var fileWorkRoot by remember { mutableStateOf(Routes.Files) }
     val latestDirectoryPicker by rememberUpdatedState(onChooseStorageTree)
     val latestCoverPicker by rememberUpdatedState(onChooseTagCover)
     val latestUrlOpener by rememberUpdatedState(onOpenUrl)
     val browserVisible = isBrowserRoute(route)
     val searchVisible = route == Routes.Search
-    val showFileActions = browserVisible && state.canEditSelection
+    val albumsVisible = route == Routes.Albums
+    val albumTracksVisible = route == Routes.Album
+    val showFileActions = isFileWorkRoute(route) && state.canEditSelection
     val settingsVisible = route == Routes.Settings
     val aboutVisible = route == Routes.About
-    val settingsTab = rootRoute(route) == Routes.Settings
+    val currentRoot = rootRoute(route, fileWorkRoot)
     val appName = stringResource(R.string.app_name)
     val title = when (route) {
         Routes.Options -> "选择刮削内容"
@@ -123,6 +146,7 @@ private fun AppNavigation(
         Routes.Editor -> "编辑标签"
         Routes.Candidates -> "选择匹配歌曲"
         Routes.About -> "关于"
+        Routes.Album -> state.openedAlbumTitle ?: "专辑"
         else -> appName
     }
     LaunchedEffect(showFileActions) {
@@ -143,6 +167,11 @@ private fun AppNavigation(
     LaunchedEffect(route) {
         if (shouldLeaveSearch(route)) model.onAction(MainAction.LeaveSearch)
     }
+    val keepAlbumTracks = albumTracksVisible ||
+        (fileWorkRoot == Routes.Albums && route in setOf(Routes.Options, Routes.Candidates, Routes.Rename, Routes.Editor))
+    LaunchedEffect(keepAlbumTracks) {
+        if (!keepAlbumTracks) model.onAction(MainAction.LeaveAlbum)
+    }
     LaunchedEffect(route, state.selected.isEmpty(), state.busy) {
         if (shouldReturnToBrowser(route, state)) {
             nav.popBackStack(if (route == Routes.Editor) Routes.Editor else if (route == Routes.Rename) Routes.Rename else Routes.Options, inclusive = true)
@@ -152,10 +181,15 @@ private fun AppNavigation(
         val index = pendingTab
         if (index != null && lifecycle == Lifecycle.State.RESUMED) {
             pendingTab = null
-            val target = if (index == 0) Routes.Files else Routes.Settings
-            if (tabDecision(route, target) != TabDecision.Stay) {
+            val target = when (index) {
+                0 -> Routes.Files
+                1 -> Routes.Albums
+                else -> Routes.Settings
+            }
+            if (tabDecision(route, target, fileWorkRoot) != TabDecision.Stay) {
                 model.onAction(MainAction.DismissTransientUi)
-                selectTopLevel(nav, route, target)
+                fileWorkRoot = if (target == Routes.Albums) Routes.Albums else Routes.Files
+                selectTopLevel(nav, route, target, fileWorkRoot)
             }
         }
     }
@@ -173,9 +207,18 @@ private fun AppNavigation(
                 }
                 MainEffect.OpenSearch -> if (isDirectoryRoute(current)) nav.navigate(Routes.Search) { launchSingleTop = true }
                 MainEffect.CloseSearch -> if (current == Routes.Search) nav.popBackStack()
-                MainEffect.OpenOptions -> if (isBrowserRoute(current)) nav.navigate(Routes.Options) { launchSingleTop = true }
-                MainEffect.OpenRename -> if (isBrowserRoute(current)) nav.navigate(Routes.Rename) { launchSingleTop = true }
-                MainEffect.OpenTagEditor -> if (isBrowserRoute(current)) nav.navigate(Routes.Editor) { launchSingleTop = true }
+                MainEffect.OpenOptions -> if (isFileWorkRoute(current)) {
+                    fileWorkRoot = if (current == Routes.Album) Routes.Albums else Routes.Files
+                    nav.navigate(Routes.Options) { launchSingleTop = true }
+                }
+                MainEffect.OpenRename -> if (isFileWorkRoute(current)) {
+                    fileWorkRoot = if (current == Routes.Album) Routes.Albums else Routes.Files
+                    nav.navigate(Routes.Rename) { launchSingleTop = true }
+                }
+                MainEffect.OpenTagEditor -> if (isFileWorkRoute(current)) {
+                    fileWorkRoot = if (current == Routes.Album) Routes.Albums else Routes.Files
+                    nav.navigate(Routes.Editor) { launchSingleTop = true }
+                }
                 MainEffect.ChooseTagCover -> if (current == Routes.Editor) latestCoverPicker()
                 MainEffect.OpenCandidates -> if (current == Routes.Options) nav.navigate(Routes.Candidates) { launchSingleTop = true }
                 MainEffect.ReturnToBrowser -> if (current == Routes.Options || current == Routes.Candidates || current == Routes.Rename || current == Routes.Editor) {
@@ -184,6 +227,9 @@ private fun AppNavigation(
                 MainEffect.ChooseStorageTree -> latestDirectoryPicker()
                 MainEffect.OpenAbout -> if (current == Routes.Settings) nav.navigate(Routes.About) { launchSingleTop = true }
                 is MainEffect.OpenUrl -> latestUrlOpener(effect.url)
+                is MainEffect.OpenAlbum -> if (current == Routes.Albums) {
+                    nav.navigate("albums/album?id=${Uri.encode(effect.key)}") { launchSingleTop = true }
+                }
                 MainEffect.ResetBrowserRoot -> nav.navigate(Routes.Files) {
                     popUpTo(Routes.Files) { inclusive = false }
                     launchSingleTop = true
@@ -198,21 +244,31 @@ private fun AppNavigation(
         add(AppMenuItem("sort", "排序", AppIcons.Sort, state.canSort))
         add(AppMenuItem("all", if (allSelected) "取消全选" else "全选", AppIcons.Check, state.canSelectFiles && visibleItems.isNotEmpty()))
         if (state.selected.isNotEmpty()) add(AppMenuItem("clear", "清除选择", AppIcons.Check))
+    } else if (albumsVisible) listOf(
+        AppMenuItem("album_sort", "排序", AppIcons.Sort, !state.busy && !state.libraryLoading),
+        AppMenuItem("album_columns", "最小列数", AppIcons.Grid, !state.busy),
+    ) else if (albumTracksVisible) buildList {
+        add(AppMenuItem("all", if (allSelected) "取消全选" else "全选", AppIcons.Check, state.canSelectFiles && visibleItems.isNotEmpty()))
+        if (state.selected.isNotEmpty()) add(AppMenuItem("clear", "清除选择", AppIcons.Check))
     } else emptyList()
+    val menuVisible = browserVisible || albumsVisible || albumTracksVisible
     AppScaffold(
         screenKey = entry?.id,
         modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog || state.mp3TagVersionDialog || state.sourceDialog != null) && settingsVisible) || (state.sortDialog && browserVisible) ||
+            ((state.albumSortDialog || state.albumColumnsDialog) && albumsVisible) ||
             (state.availableUpdate != null && aboutVisible) || (state.editMenuExpanded && showFileActions),
         topBar = {
             AppTopBar(
                 title = title,
                 menuItems = fileMenu,
-                menuExpanded = state.fileMenuExpanded && browserVisible,
+                menuExpanded = state.fileMenuExpanded && menuVisible,
                 onMenuExpandedChange = { model.onAction(MainAction.SetFileMenu(it)) },
                 onMenuItemClick = { id ->
                     model.onAction(when (id) {
                         "folder" -> MainAction.ChooseStorageTree
                         "sort" -> MainAction.ShowSortDialog
+                        "album_sort" -> MainAction.ShowAlbumSortDialog
+                        "album_columns" -> MainAction.ShowAlbumColumnsDialog
                         "all" -> MainAction.ToggleSelectAll
                         "clear" -> MainAction.ClearSelection
                         else -> error("Unknown file menu action")
@@ -231,9 +287,10 @@ private fun AppNavigation(
             AppNavigationBar(
                 destinations = listOf(
                     AppNavigationDestination("文件", AppIcons.Music),
+                    AppNavigationDestination("专辑", AppIcons.Album),
                     AppNavigationDestination("设置", AppIcons.Settings),
                 ),
-                selectedIndex = if (settingsTab) 1 else 0,
+                selectedIndex = tabIndex(currentRoot),
                 onDestinationSelected = { pendingTab = it },
             )
         },
@@ -252,10 +309,10 @@ private fun AppNavigation(
         NavHost(
             navController = nav,
             startDestination = Routes.Files,
-            enterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route)) },
-            exitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route)) },
-            popEnterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true)) },
-            popExitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true)) },
+            enterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, fileWorkRoot = fileWorkRoot)) },
+            exitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, fileWorkRoot = fileWorkRoot)) },
+            popEnterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
+            popExitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
         ) {
             composable(Routes.Search) {
                 LaunchedEffect(Unit) { model.onAction(MainAction.ActivateSearch) }
@@ -276,9 +333,14 @@ private fun AppNavigation(
             composable(Routes.Candidates) { CandidatesPage(state, model::onAction) }
             composable(Routes.Settings) { SettingsPage(state, model::onAction) }
             composable(Routes.About) { AboutPage(state, model::onAction) }
+            composable(Routes.Albums) { AlbumsPage(state, model::onAction) }
+            composable(
+                Routes.Album,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { AlbumTracksPage(state, model::onAction) }
         }
     }
-    MainDialogs(state, settingsVisible, browserVisible, aboutVisible, model::onAction)
+    MainDialogs(state, settingsVisible, browserVisible, aboutVisible, albumsVisible, model::onAction)
 }
 
 /** Freeze an outgoing folder while its exit/predictive-back transition is still on screen. */
@@ -301,8 +363,8 @@ internal fun rememberDirectoryState(uri: String?, active: Boolean, state: MainUi
     return displayed
 }
 
-private fun selectTopLevel(nav: NavHostController, current: String, target: String) {
-    when (tabDecision(current, target)) {
+private fun selectTopLevel(nav: NavHostController, current: String, target: String, fileWorkRoot: String = Routes.Files) {
+    when (tabDecision(current, target, fileWorkRoot)) {
         TabDecision.Stay -> Unit
         TabDecision.PopToRoot -> nav.popBackStack(target, inclusive = false)
         TabDecision.SwitchRoot -> nav.navigate(target) {

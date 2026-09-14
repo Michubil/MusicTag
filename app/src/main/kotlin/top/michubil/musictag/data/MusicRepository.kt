@@ -145,18 +145,18 @@ class MusicRepository(
         browseCache.retain(root.treeUri, scanTreeContents(root).second)
     }
 
-    internal suspend fun buildSearchIndex(
+    internal suspend fun indexLibrary(
         root: MusicDocument,
         filters: AudioFilters,
         onProgress: suspend (ScanProgress) -> Unit = {},
-    ): List<SearchEntry> {
+    ): List<LibraryEntry> {
         val context = currentCoroutineContext()
         val (files, liveUris) = scanTreeContents(root)
         browseCache.retain(root.treeUri, liveUris)
         val searchable = filterAudio(files, filters, onProgress)
         return LocalFileWork.map(searchable, onProgress) { document ->
             context.ensureActive()
-            readSearchEntry(document)
+            readLibraryEntry(document)
         }
     }
 
@@ -171,13 +171,13 @@ class MusicRepository(
         return files to liveUris
     }
 
-    private suspend fun readSearchEntry(document: MusicDocument): SearchEntry = try {
+    private suspend fun readLibraryEntry(document: MusicDocument): LibraryEntry = try {
         val metadata = readTextMetadata(document)
-        SearchEntry(document, TagSearch.fields(document.name, metadata = metadata), TagSearch.track(document.name, metadata))
+        LibraryEntry(document, TagSearch.fields(document.name, metadata = metadata), TagSearch.track(document.name, metadata))
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
-        SearchEntry(document, listOf(document.name), null)
+        LibraryEntry(document, listOf(document.name), null)
     }
 
     private suspend fun readTextMetadata(document: MusicDocument): AudioTextMetadata {

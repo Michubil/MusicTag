@@ -8,7 +8,7 @@ import top.michubil.musictag.data.storage.sortDocuments
 import java.text.Normalizer
 import java.util.Locale
 
-internal data class SearchEntry(
+internal data class LibraryEntry(
     val document: MusicDocument,
     val fields: List<String>,
     val track: LocalTrack?,
@@ -37,6 +37,8 @@ internal object TagSearch {
         artists = metadata.artists,
         album = metadata.values[RenameTag.ALBUM],
         durationMs = null,
+        year = metadata.values[RenameTag.YEAR]?.toIntOrNull(),
+        albumArtists = metadata.albumArtists,
     )
 
     private fun normalize(text: String): String =
@@ -44,12 +46,12 @@ internal object TagSearch {
 }
 
 internal fun filterSearch(
-    index: List<SearchEntry>,
+    index: List<LibraryEntry>,
     query: String,
     sort: FileSort,
     descending: Boolean,
-): List<SearchEntry> {
+): List<LibraryEntry> {
     val matched = index.filter { TagSearch.matches(query, it.fields) }
     val byUri = matched.associateBy { it.document.uri }
-    return sortDocuments(matched.map(SearchEntry::document), sort, descending).map { byUri.getValue(it.uri) }
+    return sortDocuments(matched.map(LibraryEntry::document), sort, descending).map { byUri.getValue(it.uri) }
 }

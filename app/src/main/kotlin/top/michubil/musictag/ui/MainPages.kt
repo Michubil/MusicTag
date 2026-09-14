@@ -11,6 +11,7 @@ import dev.androidgui.core.designsystem.icon.AppIcons
 import top.michubil.musictag.BuildConfig
 import top.michubil.musictag.R
 import top.michubil.musictag.data.AudioFilters
+import top.michubil.musictag.data.AlbumSort
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
 import top.michubil.musictag.data.model.MetadataField
@@ -38,14 +39,7 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
         } else null,
     ) {
         if (state.showStoragePicker) {
-            item {
-                EmptyState(
-                    title = "选择音乐文件夹",
-                    message = state.storageError ?: "选择文件夹并允许读写，Music Tag 只访问你授权的文件夹及其子目录。",
-                    actionLabel = "选择文件夹",
-                    onAction = { onAction(MainAction.ChooseStorageTree) },
-                )
-            }
+            item { SelectMusicFolderEmpty(state, onAction) }
         } else if (state.storageGranted) {
             state.storageError?.let { error ->
                 item {
@@ -95,23 +89,23 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
 @Composable
 fun SearchPage(state: MainUiState, onAction: (MainAction) -> Unit) {
     AppRefreshableContentList(
-        refreshing = state.searchRefreshing,
+        refreshing = state.libraryRefreshing,
         enabled = state.canRefreshSearch,
         onRefresh = { onAction(MainAction.PullRefresh) },
         compact = true,
-        status = if (state.searchLoading) {
+        status = if (state.libraryLoading) {
             {
                 AppLoadingStatus(
-                    message = state.searchLoadingMessage,
-                    progress = state.searchProgress?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
-                    deferDisplay = !state.searchRefreshing,
+                    message = state.libraryLoadingMessage,
+                    progress = state.libraryProgress?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
+                    deferDisplay = !state.libraryRefreshing,
                 )
             }
         } else null,
     ) {
         when {
             state.searchQuery.isBlank() -> item { EmptyState(title = "搜索歌曲名、艺术家或专辑") }
-            state.searchItems.isEmpty() && !state.searchLoading && !state.searchRefreshing -> item { EmptyState(title = "没有找到匹配的歌曲") }
+            state.searchItems.isEmpty() && !state.libraryLoading && !state.libraryRefreshing -> item { EmptyState(title = "没有找到匹配的歌曲") }
             else -> items(state.searchItems, key = { it.document.uri }) { item ->
                 AudioFileRow(item, state, onAction, loadPreviews = true)
             }
@@ -120,7 +114,17 @@ fun SearchPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-private fun AudioFileRow(item: FileItem, state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews: Boolean) {
+internal fun SelectMusicFolderEmpty(state: MainUiState, onAction: (MainAction) -> Unit) {
+    EmptyState(
+        title = "选择音乐文件夹",
+        message = state.storageError ?: "选择文件夹并允许读写，Music Tag 只访问你授权的文件夹及其子目录。",
+        actionLabel = "选择文件夹",
+        onAction = { onAction(MainAction.ChooseStorageTree) },
+    )
+}
+
+@Composable
+internal fun AudioFileRow(item: FileItem, state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews: Boolean) {
     val preview by item.preview.collectAsStateWithLifecycle()
     DisposableEffect(item, state.artworkRevision, loadPreviews) {
         if (loadPreviews) onAction(MainAction.LoadFilePreview(item))
@@ -374,7 +378,7 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, onAction: (MainAction) -> Unit) {
+fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, albumsVisible: Boolean, onAction: (MainAction) -> Unit) {
     MetadataGroup.entries.forEach { group ->
         AppSingleChoiceDialog(
             visible = state.sourceDialog == group && settingsVisible,
@@ -428,6 +432,22 @@ fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Bo
         onDismissRequest = { onAction(MainAction.DismissSortDialog) },
         toggle = AppDialogToggle("倒序", state.sortDescendingDraft) { onAction(MainAction.SetSortDescendingDraft(it)) },
         actions = AppDialogActions("确定", "取消") { onAction(MainAction.ApplySort) },
+    )
+    AppSingleChoiceDialog(
+        visible = state.albumSortDialog && albumsVisible,
+        title = "排序",
+        options = AlbumSort.entries.map { AppChoiceOption(it, it.label) },
+        selectedValue = state.albumSort,
+        onSelect = { onAction(MainAction.SetAlbumSort(it)) },
+        onDismissRequest = { onAction(MainAction.DismissAlbumSortDialog) },
+    )
+    AppSingleChoiceDialog(
+        visible = state.albumColumnsDialog && albumsVisible,
+        title = "最小列数",
+        options = listOf(2, 3, 4).map { AppChoiceOption(it, it.toString()) },
+        selectedValue = state.albumMinColumns,
+        onSelect = { onAction(MainAction.SetAlbumMinColumns(it)) },
+        onDismissRequest = { onAction(MainAction.DismissAlbumColumnsDialog) },
     )
     AppConfirmDialog(
         visible = state.availableUpdate != null && aboutVisible,

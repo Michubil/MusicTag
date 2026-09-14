@@ -9,7 +9,7 @@ import top.michubil.musictag.data.rename.AudioTextMetadata
 import top.michubil.musictag.data.rename.RenameTag
 import top.michubil.musictag.data.storage.MusicDocument
 
-class TagSearchTest {
+class LibraryIndexTest {
     private val fields = TagSearch.fields("01.flac", AudioTextMetadata.from(
         title = "七里香", artists = listOf("周杰伦"), album = "七里香",
         albumArtists = listOf("群星"), comment = "Jay", date = "2004-08-03",
@@ -20,6 +20,16 @@ class TagSearchTest {
         val metadata = AudioTextMetadata.from(title = "歌", artists = listOf("甲 & 乙", "丙"))
         assertEquals(listOf("甲 & 乙", "丙"), TagSearch.track("song.flac", metadata).artists)
         assertEquals("甲 & 乙 & 丙", metadata.values[RenameTag.ARTISTS])
+    }
+
+    @Test
+    fun trackKeepsYearAndAlbumArtistsForLibraryGrouping() {
+        val metadata = AudioTextMetadata.from(
+            title = "歌", artists = listOf("甲"), album = "辑", albumArtists = listOf("乙"), date = "2017-01-02",
+        )
+        val track = TagSearch.track("song.flac", metadata)
+        assertEquals(2017, track.year)
+        assertEquals(listOf("乙"), track.albumArtists)
     }
 
     @Test
@@ -52,7 +62,7 @@ class TagSearchTest {
         assertEquals(listOf("a.mp3", "b.flac"), filterSearch(listOf(jay, other), "周杰伦", FileSort.NAME, false).map { it.document.name })
     }
 
-    private fun entry(name: String, title: String, artist: String, album: String) = SearchEntry(
+    private fun entry(name: String, title: String, artist: String, album: String) = LibraryEntry(
         MusicDocument("tree", "uri:$name", "root", name),
         TagSearch.fields(name, AudioTextMetadata.from(title = title, artists = listOf(artist), album = album)),
         LocalTrack(name, title, listOf(artist), album, null),

@@ -15,7 +15,9 @@ import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
 import top.michubil.musictag.data.rename.RenameEntry
 import top.michubil.musictag.data.rename.RenamePreset
+import top.michubil.musictag.data.AlbumGroup
 import top.michubil.musictag.data.AppRelease
+import top.michubil.musictag.data.AlbumSort
 
 data class MainUiState(
     val treeUri: String? = null,
@@ -68,20 +70,42 @@ data class MainUiState(
     val searching: Boolean = false,
     val searchQuery: String = "",
     val searchItems: List<FileItem> = emptyList(),
-    val searchLoading: Boolean = false,
-    val searchRefreshing: Boolean = false,
-    val searchProgress: ScanProgress? = null,
+    val libraryLoading: Boolean = false,
+    val libraryRefreshing: Boolean = false,
+    val libraryProgress: ScanProgress? = null,
     val checkingUpdate: Boolean = false,
     val availableUpdate: AppRelease? = null,
+    val albums: List<AlbumGroup> = emptyList(),
+    val albumCovers: Map<String, FileItem> = emptyMap(),
+    val albumItems: List<FileItem> = emptyList(),
+    val openedAlbumKey: String? = null,
+    val openedAlbumTitle: String? = null,
+    val albumSort: AlbumSort = AlbumSort.TITLE,
+    val albumMinColumns: Int = 3,
+    val albumSortDialog: Boolean = false,
+    val albumColumnsDialog: Boolean = false,
 ) {
     val showStoragePicker: Boolean get() = !loading && !storageGranted
     val canRefresh: Boolean get() = storageGranted && !loading && !busy
     val canSearch: Boolean get() = storageGranted && !busy && root != null && storageError == null && recoveryError == null
-    val canRefreshSearch: Boolean get() = canSearch && !searchLoading
+    val canRefreshSearch: Boolean get() = canSearch && !libraryLoading
     val canSort: Boolean get() = if (searching) canSearch else canRefresh
-    val visibleItems: List<FileItem> get() = if (searching) searchItems else items
-    val canSelectFiles: Boolean get() = !busy && storageGranted && storageError == null && recoveryError == null &&
-        (searching || (!loading && !showingCachedContent))
+    val viewingAlbum: Boolean get() = openedAlbumKey != null
+    val visibleItems: List<FileItem> get() = when {
+        searching -> searchItems
+        viewingAlbum -> albumItems
+        else -> items
+    }
+    val canSelectFiles: Boolean get() = !busy && storageGranted && storageError == null && recoveryError == null && when {
+        searching -> true
+        viewingAlbum -> !libraryLoading
+        else -> !loading && !showingCachedContent
+    }
+    val canRefreshLibrary: Boolean get() = storageGranted && !libraryLoading && !busy && storageError == null && recoveryError == null
+    val libraryLoadingMessage: String get() {
+        val prefix = if (searching) "正在搜索" else "正在读取专辑"
+        return libraryProgress?.let { "$prefix ${it.completed} / ${it.total}" } ?: prefix
+    }
     val canOpenDirectories: Boolean get() = (!loading || scanProgress != null || showingCachedContent) &&
         !busy && storageGranted && storageError == null && recoveryError == null
     val loadingMessage: String get() = scanProgress?.let { "正在筛选音频 ${it.completed} / ${it.total}" }
@@ -91,7 +115,6 @@ data class MainUiState(
     val renameLoadingMessage: String get() = renameReadProgress?.let {
         if (it.completed == it.total) "正在检查文件名" else "正在读取标签(${it.completed}/${it.total})"
     } ?: "正在准备标签读取"
-    val searchLoadingMessage: String get() = searchProgress?.let { "正在搜索 ${it.completed} / ${it.total}" } ?: "正在搜索"
     val canEditSelection: Boolean get() = canSelectFiles && selected.isNotEmpty()
     val canScrape: Boolean get() = policies.values.any { it.enabled } && canEditSelection
     val renamePattern: String get() = if (renamePreset == RenamePreset.CUSTOM) renameCustomPattern else renamePreset.pattern
@@ -176,6 +199,16 @@ sealed interface MainAction {
     data object OpenLicense : MainAction
     data object OpenNotices : MainAction
     data class ShowMessage(val message: String) : MainAction
+    data object AlbumsShown : MainAction
+    data object RebuildLibrary : MainAction
+    data class OpenAlbum(val key: String) : MainAction
+    data object LeaveAlbum : MainAction
+    data object ShowAlbumSortDialog : MainAction
+    data object DismissAlbumSortDialog : MainAction
+    data class SetAlbumSort(val sort: AlbumSort) : MainAction
+    data object ShowAlbumColumnsDialog : MainAction
+    data object DismissAlbumColumnsDialog : MainAction
+    data class SetAlbumMinColumns(val columns: Int) : MainAction
 }
 
 sealed interface MainEffect {
@@ -192,6 +225,7 @@ sealed interface MainEffect {
     data object ChooseStorageTree : MainEffect
     data object OpenAbout : MainEffect
     data class OpenUrl(val url: String) : MainEffect
+    data class OpenAlbum(val key: String) : MainEffect
 }
 
 internal object AboutLinks {
