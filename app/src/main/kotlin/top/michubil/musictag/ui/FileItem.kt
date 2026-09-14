@@ -27,4 +27,5 @@ internal fun MainUiState.acceptPreview(item: FileItem, preview: FilePreview): Bo
 }
 
 internal fun MainUiState.containsPreviewItem(item: FileItem): Boolean =
-    items.any { it === item } || searchItems.any { it === item }
+    items.any { it === item } || searchItems.any { it === item } || albumItems.any { it === item } ||
+        albumCovers.values.any { it === item }

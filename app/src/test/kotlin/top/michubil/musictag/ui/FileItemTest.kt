@@ -21,6 +21,9 @@ class FileItemTest {
         assertFalse(state.acceptPreview(stale, preview))
         assertNull(stale.preview.value.track)
         assertFalse(state.copy(searchItems = emptyList()).acceptPreview(active, preview))
+        val albumRow = FileItem(document)
+        assertTrue(state.copy(searching = false, albumItems = listOf(albumRow)).containsPreviewItem(albumRow))
+        assertTrue(state.copy(searching = false, albumCovers = mapOf("album" to albumRow)).containsPreviewItem(albumRow))
     }
 
     @Test

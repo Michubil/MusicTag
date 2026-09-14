@@ -229,6 +229,8 @@ data class LocalTrack(
     val artists: List<String>,
     val album: String?,
     val durationMs: Long?,
+    val year: Int? = null,
+    val albumArtists: List<String> = emptyList(),
 )
 
 data class SongCandidate(

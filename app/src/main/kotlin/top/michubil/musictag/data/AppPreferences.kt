@@ -18,6 +18,8 @@ data class UserPreferences(
     val dynamicColor: Boolean,
     val fileSort: FileSort,
     val sortDescending: Boolean,
+    val albumSort: AlbumSort,
+    val albumMinColumns: Int,
     val formatLyricsTimeline: Boolean,
     val recursive: Boolean,
     val storageTreeUri: String?,
@@ -45,6 +47,14 @@ class AppPreferences(context: Context) {
             putString("file_sort", sort.name)
             putBoolean("sort_descending", descending)
         }
+    }
+
+    fun setAlbumSort(sort: AlbumSort) {
+        persist { putString("album_sort", sort.name) }
+    }
+
+    fun setAlbumMinColumns(columns: Int) {
+        persist { putInt("album_min_columns", columns.coerceIn(2, 4)) }
     }
 
     fun setFormatLyricsTimeline(enabled: Boolean) {
@@ -90,6 +100,8 @@ class AppPreferences(context: Context) {
         dynamicColor = storage.getBoolean("dynamic_color", true),
         fileSort = FileSort.valueOf(storage.getString("file_sort", FileSort.NAME.name)!!),
         sortDescending = storage.getBoolean("sort_descending", false),
+        albumSort = AlbumSort.entries.firstOrNull { it.name == storage.getString("album_sort", null) } ?: AlbumSort.TITLE,
+        albumMinColumns = storage.getInt("album_min_columns", 3).coerceIn(2, 4),
         formatLyricsTimeline = storage.getBoolean("format_lyrics_timeline", true),
         recursive = storage.getBoolean("recursive", false),
         mp3TagVersion = Mp3TagVersion.entries.firstOrNull {

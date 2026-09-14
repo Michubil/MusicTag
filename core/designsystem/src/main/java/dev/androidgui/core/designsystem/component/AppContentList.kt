@@ -24,17 +24,15 @@ import dev.androidgui.core.designsystem.tokens.AppSpacing
 
 internal val LocalAppContentBottomPadding = staticCompositionLocalOf { AppSpacing.None }
 
-/** Keeps short/empty lists refreshable without moving the viewport or changing list identity. */
+/** Pull-to-refresh shell for list or grid content; loading status replaces the indicator. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppRefreshableContentList(
+fun AppRefreshableContent(
     refreshing: Boolean,
     enabled: Boolean,
     onRefresh: () -> Unit,
-    listState: LazyListState = rememberLazyListState(),
-    compact: Boolean = false,
     status: (@Composable () -> Unit)? = null,
-    content: LazyListScope.() -> Unit,
+    content: @Composable () -> Unit,
 ) {
     val state = rememberPullToRefreshState()
     Box(
@@ -45,7 +43,7 @@ fun AppRefreshableContentList(
             onRefresh = onRefresh,
         ),
     ) {
-        AppContentList(state = listState, compact = compact, content = content)
+        content()
         if (status != null) Box(Modifier.align(Alignment.TopCenter)) { status() }
         else PullToRefreshDefaults.Indicator(
             state = state,
@@ -54,6 +52,22 @@ fun AppRefreshableContentList(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+/** Keeps short/empty lists refreshable without moving the viewport or changing list identity. */
+@Composable
+fun AppRefreshableContentList(
+    refreshing: Boolean,
+    enabled: Boolean,
+    onRefresh: () -> Unit,
+    listState: LazyListState = rememberLazyListState(),
+    compact: Boolean = false,
+    status: (@Composable () -> Unit)? = null,
+    content: LazyListScope.() -> Unit,
+) {
+    AppRefreshableContent(refreshing, enabled, onRefresh, status) {
+        AppContentList(state = listState, compact = compact, content = content)
     }
 }
 

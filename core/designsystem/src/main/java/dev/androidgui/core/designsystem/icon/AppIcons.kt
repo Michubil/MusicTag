@@ -18,6 +18,8 @@ value class AppIcon internal constructor(@DrawableRes internal val resourceId: I
 
 object AppIcons {
     val About = AppIcon(R.drawable.ic_about)
+    val Album = AppIcon(R.drawable.ic_album)
+    val Grid = AppIcon(R.drawable.ic_grid)
     val Settings = AppIcon(R.drawable.ic_settings)
     val Appearance = AppIcon(R.drawable.ic_palette)
     val Check = AppIcon(R.drawable.ic_check)

@@ -11,6 +11,7 @@ class AppNavigationTest {
     @Test
     fun rootReselectionIsNoOp() {
         assertEquals(TabDecision.Stay, tabDecision(Routes.Files, Routes.Files))
+        assertEquals(TabDecision.Stay, tabDecision(Routes.Albums, Routes.Albums))
         assertEquals(TabDecision.Stay, tabDecision(Routes.Settings, Routes.Settings))
     }
 
@@ -20,6 +21,7 @@ class AppNavigationTest {
             assertEquals(TabDecision.PopToRoot, tabDecision(it, Routes.Files))
         }
         assertEquals(TabDecision.PopToRoot, tabDecision(Routes.About, Routes.Settings))
+        assertEquals(TabDecision.PopToRoot, tabDecision(Routes.Album, Routes.Albums))
     }
 
     @Test
@@ -27,14 +29,22 @@ class AppNavigationTest {
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Candidates, Routes.Settings))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Settings, Routes.Files))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.About, Routes.Files))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Albums, Routes.Settings))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Album, Routes.Files))
+        assertEquals(TabDecision.PopToRoot, tabDecision(Routes.Options, Routes.Albums, Routes.Albums))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Options, Routes.Albums, Routes.Files))
     }
 
     @Test
     fun rootTransitionsKeepReferenceDirection() {
         assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Options, Routes.Settings))
+        assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Files, Routes.Albums))
+        assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Albums, Routes.Settings))
         assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Files, Routes.About))
         assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.Settings, Routes.Files, true))
         assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.About, Routes.Files))
+        assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.Settings, Routes.Albums))
+        assertEquals(AppPageMotion.Open, resolvePageMotion(Routes.Albums, Routes.Album))
     }
 
     @Test
@@ -54,6 +64,7 @@ class AppNavigationTest {
         assertEquals(child, browserDirectoryUri(Routes.Folder, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Settings, root, child))
         assertEquals(null, browserDirectoryUri(Routes.About, root, child))
+        assertEquals(null, browserDirectoryUri(Routes.Albums, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Search, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Files, null, child))
     }
@@ -67,6 +78,8 @@ class AppNavigationTest {
         assertTrue(shouldLeaveSearch(Routes.Files))
         assertTrue(shouldLeaveSearch(Routes.Settings))
         assertTrue(shouldLeaveSearch(Routes.About))
+        assertTrue(shouldLeaveSearch(Routes.Albums))
+        assertTrue(shouldLeaveSearch(Routes.Album))
         assertFalse(shouldReturnToBrowser(Routes.Search, MainUiState()))
     }
 
@@ -81,6 +94,8 @@ class AppNavigationTest {
         assertFalse(shouldReturnToBrowser(Routes.Folder, restored))
         assertFalse(shouldReturnToBrowser(Routes.Settings, restored))
         assertFalse(shouldReturnToBrowser(Routes.About, restored))
+        assertFalse(shouldReturnToBrowser(Routes.Albums, restored))
+        assertFalse(shouldReturnToBrowser(Routes.Album, restored))
     }
 
     @Test
