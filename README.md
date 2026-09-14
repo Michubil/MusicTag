@@ -5,7 +5,7 @@ Music Tag 是面向 Android 的本地音乐标签工具。从网络源匹配标�
 <p align="center">
   <img src="images/home.png" width="280" alt="文件列表" />
   <img src="images/scrape.png" width="280" alt="选择刮削内容" />
-  <img src="images/album-index.png" width="280" alt="专辑首字母滚动条" />
+  <img src="images/albums.png" width="280" alt="专辑页面" />
 </p>
 
 ## Feature
