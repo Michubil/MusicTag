@@ -8,22 +8,37 @@ import top.michubil.musictag.data.storage.sortDocuments
 import java.text.Normalizer
 import java.util.Locale
 
-internal data class LibraryEntry(
+internal class LibraryEntry(
     val document: MusicDocument,
-    val fields: List<String>,
+    val searchText: String,
     val track: LocalTrack?,
-)
+) {
+    constructor(document: MusicDocument, fields: Iterable<String>, track: LocalTrack?) :
+        this(document, TagSearch.normalizeFields(fields), track)
+}
+
+/** Search and albums share a snapshot; disk snapshots remain read-only until SAF validation. */
+internal class LibraryIndex(val entries: List<LibraryEntry>, val isCached: Boolean = false) {
+    private val byUri = entries.associateBy { it.document.uri }
+    private val groups = AlbumLibrary.group(entries)
+    private val albumOrders = AlbumSort.entries.associateWith { sort -> lazy { AlbumLibrary.sort(groups, sort) } }
+
+    fun albums(sort: AlbumSort): List<AlbumGroup> = albumOrders.getValue(sort).value
+
+    fun track(document: MusicDocument): LocalTrack? =
+        byUri[document.uri]?.takeIf { it.document == document }?.track
+}
 
 internal object TagSearch {
-    fun tokens(query: String): List<String> = query.trim().split(Regex("\\s+"))
+    private val whitespace = Regex("\\s+")
+
+    fun tokens(query: String): List<String> = query.trim().split(whitespace)
         .map(::normalize).filter(String::isNotEmpty)
 
-    fun matches(query: String, fields: Iterable<String>): Boolean {
-        val needles = tokens(query)
-        if (needles.isEmpty()) return false
-        val haystack = fields.joinToString("\n", transform = ::normalize)
-        return needles.all { it in haystack }
-    }
+    fun normalizeFields(fields: Iterable<String>): String = fields.joinToString("\n", transform = ::normalize)
+
+    fun matches(tokens: List<String>, searchText: String): Boolean =
+        tokens.isNotEmpty() && tokens.all { it in searchText }
 
     fun fields(fileName: String, metadata: AudioTextMetadata): List<String> = buildList {
         add(fileName)
@@ -46,12 +61,21 @@ internal object TagSearch {
 }
 
 internal fun filterSearch(
-    index: List<LibraryEntry>,
+    index: LibraryIndex,
     query: String,
     sort: FileSort,
     descending: Boolean,
+    checkActive: () -> Unit = {},
 ): List<LibraryEntry> {
-    val matched = index.filter { TagSearch.matches(query, it.fields) }
+    val tokens = TagSearch.tokens(query)
+    if (tokens.isEmpty()) return emptyList()
+    val matched = index.entries.filter {
+        checkActive()
+        TagSearch.matches(tokens, it.searchText)
+    }
     val byUri = matched.associateBy { it.document.uri }
-    return sortDocuments(matched.map(LibraryEntry::document), sort, descending).map { byUri.getValue(it.uri) }
+    return sortDocuments(matched.map(LibraryEntry::document), sort, descending).map {
+        checkActive()
+        byUri.getValue(it.uri)
+    }
 }

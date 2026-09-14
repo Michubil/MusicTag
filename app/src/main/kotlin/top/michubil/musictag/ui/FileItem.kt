@@ -12,7 +12,9 @@ class FileItem(val document: MusicDocument, track: LocalTrack? = null) {
     private val mutablePreview = MutableStateFlow(FilePreview(track, null))
     val preview = mutablePreview.asStateFlow()
 
-    internal fun showPreview(preview: FilePreview) { mutablePreview.value = preview }
+    internal fun showPreview(preview: FilePreview) {
+        mutablePreview.update { preview.copy(track = preview.track ?: it.track) }
+    }
     internal fun releaseArtwork() { mutablePreview.update { if (it.artwork == null) it else it.copy(artwork = null) } }
     internal fun frozenCopy(): FileItem = FileItem(document).also { it.showPreview(preview.value.copy()) }
 }
@@ -29,3 +31,8 @@ internal fun MainUiState.acceptPreview(item: FileItem, preview: FilePreview): Bo
 internal fun MainUiState.containsPreviewItem(item: FileItem): Boolean =
     items.any { it === item } || searchItems.any { it === item } || albumItems.any { it === item } ||
         albumCovers.values.any { it === item }
+
+internal fun MainUiState.isCachedPreview(item: FileItem): Boolean =
+    (showingCachedContent && items.any { it === item }) ||
+        (showingCachedLibrary && (searchItems.any { it === item } || albumItems.any { it === item } ||
+            albumCovers.values.any { it === item }))

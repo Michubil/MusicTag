@@ -1,12 +1,7 @@
 package top.michubil.musictag.data
 
 import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import top.michubil.musictag.data.storage.MusicDocument
-import java.util.concurrent.atomic.AtomicInteger
-
-data class ScanProgress(val completed: Int, val total: Int)
 
 /** Small memory front cache; the repository also reuses durable Room durations. */
 internal class AudioFileFilter(
@@ -49,34 +44,17 @@ internal class AudioFileFilter(
         knownDurations: Map<MusicDocument, Long> = emptyMap(),
         onDuration: (MusicDocument, Long) -> Unit = { _, _ -> },
         onProgress: suspend (ScanProgress) -> Unit = {},
-    ): List<MusicDocument> = coroutineScope {
+    ): List<MusicDocument> {
         val candidates = documents.filterNot(filters::excludes)
-        if (filters.minimumSeconds == 0) return@coroutineScope candidates
+        if (filters.minimumSeconds == 0) return candidates
         val audioIndices = candidates.indices.filter { !candidates[it].isDirectory }
         val allowed = BooleanArray(candidates.size) { candidates[it].isDirectory }
-        val next = AtomicInteger()
-        val progressLock = Mutex()
-        var completed = 0
-        onProgress(ScanProgress(0, audioIndices.size))
-        val workers = List(minOf(LocalFileWork.parallelism, audioIndices.size)) {
-            launch(LocalFileWork.dispatcher) {
-                while (true) {
-                    ensureActive()
-                    val position = next.getAndIncrement()
-                    if (position >= audioIndices.size) break
-                    val index = audioIndices[position]
-                    val document = candidates[index]
-                    val duration = duration(document, knownDurations[document])
-                    if (duration != null) onDuration(document, duration)
-                    allowed[index] = filters.allowsDuration(duration)
-                    progressLock.withLock {
-                        completed++
-                        if (completed % 16 == 0 || completed == audioIndices.size) onProgress(ScanProgress(completed, audioIndices.size))
-                    }
-                }
-            }
+        LocalFileWork.map(audioIndices, onProgress) { index ->
+            val document = candidates[index]
+            val duration = duration(document, knownDurations[document])
+            if (duration != null) onDuration(document, duration)
+            allowed[index] = filters.allowsDuration(duration)
         }
-        workers.joinAll()
-        candidates.filterIndexed { index, _ -> allowed[index] }
+        return candidates.filterIndexed { index, _ -> allowed[index] }
     }
 }

@@ -1,6 +1,7 @@
 package top.michubil.musictag.data
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import top.michubil.musictag.data.model.LocalTrack
 import top.michubil.musictag.data.storage.MusicDocument
@@ -21,20 +22,54 @@ class AlbumLibraryTest {
     )
 
     @Test
-    fun groupsByAlbumAndArtistAndKeepsUnknownTitlesTogetherByArtist() {
+    fun groupsByAlbumNameRegardlessOfArtistsAndYear() {
         val groups = AlbumLibrary.group(
             listOf(
                 entry("a.flac", "Eclipse", "甲", 2020),
-                entry("b.flac", "Eclipse", "甲", 2020),
-                entry("c.flac", "Eclipse", "乙", 2021),
-                entry("d.flac", null, "丙", null),
+                entry("b.flac", " eclipse ", "乙", 2020, "专辑艺术家乙"),
+                entry("c.flac", "ECLIPSE", "丙", 2021, "专辑艺术家丙"),
+                entry("d.flac", "Other", "甲", 2020),
             ),
         )
-        assertEquals(3, groups.size)
-        val eclipseJia = groups.single { it.title == "Eclipse" && it.artist == "甲" }
-        assertEquals(2, eclipseJia.tracks.size)
-        assertEquals(2020, eclipseJia.year)
-        assertEquals("未知专辑", groups.single { it.artist == "丙" }.title)
+        assertEquals(2, groups.size)
+        val eclipse = groups.single { it.title == "Eclipse" }
+        assertEquals(listOf("a.flac", "b.flac", "c.flac"), eclipse.tracks.map { it.name })
+        assertEquals(2020, eclipse.year)
+        assertEquals(null, eclipse.artist)
+        assertEquals(1, groups.single { it.title == "Other" }.tracks.size)
+    }
+
+    @Test
+    fun missingAlbumArtistsDoNotSplitAnAlbumByPerformers() {
+        val album = AlbumLibrary.group(listOf(
+            entry("a.flac", "合集", "甲", null),
+            entry("b.flac", "合集", "乙", null, " "),
+        )).single()
+        assertEquals(2, album.tracks.size)
+        assertEquals(null, album.artist)
+    }
+
+    @Test
+    fun missingAlbumNamesShareOneUnknownAlbum() {
+        val album = AlbumLibrary.group(listOf(
+            entry("a.flac", null, "甲", null),
+            entry("b.flac", "", "乙", null, "专辑艺术家乙"),
+            entry("c.flac", "  ", "丙", null),
+            LibraryEntry(MusicDocument("tree", "unreadable", "folder", "d.flac"), emptyList(), null),
+        )).single()
+        assertEquals("未知专辑", album.title)
+        assertTrue(album.key.isNotBlank())
+        assertEquals(4, album.tracks.size)
+    }
+
+    @Test
+    fun aSharedAlbumArtistRemainsVisibleForDifferentPerformers() {
+        val album = AlbumLibrary.group(listOf(
+            entry("a.flac", "合集", "甲", null, " Various Artists "),
+            entry("b.flac", "合集", "乙", null, "various artists"),
+        )).single()
+        assertEquals("Various Artists", album.artist)
+        assertEquals(2, album.tracks.size)
     }
 
     @Test

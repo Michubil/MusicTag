@@ -25,7 +25,10 @@ class LocalFileWorkTest {
             assertEquals(workers, started.get())
             gate.complete(Unit)
             assertEquals((0 until 490).map { it * 2 }, work.await())
-            assertEquals((0..490).map { ScanProgress(it, 490) }, progress)
+            assertEquals(ScanProgress(0, 490), progress.first())
+            assertEquals(ScanProgress(490, 490), progress.last())
+            assertTrue(progress.all { it.total == 490 })
+            assertTrue(progress.zipWithNext().all { (first, second) -> first.completed < second.completed })
         }
     }
 

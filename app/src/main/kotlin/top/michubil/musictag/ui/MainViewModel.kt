@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -31,12 +33,14 @@ import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.LibraryEntry
+import top.michubil.musictag.data.LibraryIndex
 import top.michubil.musictag.data.UserPreferences
 import top.michubil.musictag.data.filterSearch
 import top.michubil.musictag.BuildConfig
 import top.michubil.musictag.data.AppUpdate
-import top.michubil.musictag.data.AlbumLibrary
+import top.michubil.musictag.data.AlbumGroup
 import top.michubil.musictag.data.AlbumSort
+import top.michubil.musictag.data.FileSort
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as MusicTagApplication).container
@@ -60,8 +64,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var pruneJob: Job? = null
     private var prunedTree: String? = null
     private var libraryJob: Job? = null
-    private var libraryIndex: List<LibraryEntry>? = null
-    private val searchQueries = MutableStateFlow("")
+    private val libraryIndex = MutableStateFlow<LibraryIndex?>(null)
     private var candidateJob: Job? = null
     private var authorizationJob: Job? = null
     private var updateJob: Job? = null
@@ -89,11 +92,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            searchQueries.collectLatest { query ->
-                if (query.isBlank() || !mutableState.value.searching) return@collectLatest
-                delay(300)
-                if (mutableState.value.searching && query.isNotBlank()) runSearch(query)
-            }
+            var previousQuery: String? = null
+            var publishedIndex: LibraryIndex? = null
+            combine(libraryIndex, mutableState) { index, snapshot -> LibraryRequest(index, snapshot) }
+                .distinctUntilChanged()
+                .collectLatest { request ->
+                    val queryChanged = request.query != previousQuery
+                    previousQuery = request.query
+                    if (queryChanged && !request.query.isNullOrBlank()) delay(300)
+                    val index = request.index
+                    if (index == null) {
+                        if (!request.query.isNullOrBlank()) loadLibrary()
+                        return@collectLatest
+                    }
+                    val (albums, results) = withContext(Dispatchers.Default) {
+                        val context = currentCoroutineContext()
+                        val albums = index.albums(request.albumSort)
+                        val results = request.query?.let { query ->
+                            filterSearch(index, query, request.fileSort, request.descending) { context.ensureActive() }
+                        }.orEmpty()
+                        albums to results
+                    }
+                    // State may have changed before collectLatest receives its next request.
+                    if (request != LibraryRequest(libraryIndex.value, mutableState.value)) return@collectLatest
+                    publishLibraryContent(albums, results, request.albumSort,
+                        isNewIndex = publishedIndex !== index, isCached = index.isCached)
+                    publishedIndex = index
+                }
         }
         viewModelScope.launch {
             container.preferences.state.collectLatest { preferences ->
@@ -127,8 +152,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is MainAction.SetSearchQuery -> {
                 val query = action.query.take(120)
                 mutableState.update { it.copy(searchQuery = query, searchItems = if (query.isBlank()) emptyList() else it.searchItems) }
-                searchQueries.value = query
-                if (query.isNotBlank() && libraryIndex != null) publishSearchResults(query)
             }
             is MainAction.DirectoryShown -> {
                 if (requestedDirectory != action.uri) {
@@ -284,9 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!snapshot.canSort) return
                 container.preferences.setFileSort(snapshot.sortDraft, snapshot.sortDescendingDraft)
                 mutableState.update { it.copy(sortDialog = false) }
-                if (snapshot.searching) {
-                    if (libraryIndex != null) publishSearchResults(snapshot.searchQuery)
-                } else refreshDirectory()
+                if (!snapshot.searching) refreshDirectory()
             }
             MainAction.ChooseStorageTree -> if (!mutableState.value.busy && !mutableState.value.loading) {
                 mutableState.update { it.copy(fileMenuExpanded = false) }
@@ -319,7 +340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is MainAction.SetAlbumSort -> {
                 container.preferences.setAlbumSort(action.sort)
                 mutableState.update {
-                    it.copy(albumSortDialog = false, albumSort = action.sort, albums = AlbumLibrary.sort(it.albums, action.sort))
+                    it.copy(albumSortDialog = false, albumSort = action.sort)
                 }
             }
             MainAction.ShowAlbumColumnsDialog -> mutableState.update { it.copy(albumColumnsDialog = true, fileMenuExpanded = false) }
@@ -333,18 +354,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun showAlbums() {
-        if (libraryIndex != null) publishAlbums()
-        else loadLibrary()
+        if (libraryIndex.value == null) loadLibrary()
     }
 
     private fun rebuildLibrary(userInitiated: Boolean = false) {
         libraryJob?.cancel()
         libraryJob = null
-        libraryIndex = null
+        libraryIndex.value = null
         mutableState.update {
             it.copy(
                 libraryRefreshing = userInitiated,
                 libraryLoading = true,
+                showingCachedLibrary = true,
                 libraryProgress = null,
                 searchItems = if (it.searching) emptyList() else it.searchItems,
             )
@@ -355,54 +376,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadLibrary() {
         val snapshot = mutableState.value
         val root = snapshot.root ?: return
-        if (!snapshot.storageGranted || snapshot.storageError != null || libraryJob?.isActive == true) return
+        if (!snapshot.storageGranted || snapshot.storageError != null || snapshot.recoveryError != null ||
+            libraryIndex.value != null || libraryJob?.isActive == true) return
+        mutableState.update { it.copy(libraryLoading = true, libraryProgress = null) }
         libraryJob = viewModelScope.launch {
             try {
-                mutableState.update { it.copy(libraryLoading = true, libraryProgress = null) }
+                // The index walk also prunes missing rows; do not run a second tree walk alongside it.
+                pruneJob?.cancel()
+                pruneJob?.join()
                 val built = withContext(LocalFileWork.dispatcher) {
-                    container.repository.indexLibrary(root, snapshot.audioFilters) { progress ->
+                    container.repository.indexLibrary(root, snapshot.audioFilters,
+                        forceRead = snapshot.libraryRefreshing,
+                        onCached = { entries ->
+                            val cached = withContext(Dispatchers.Default) { LibraryIndex(entries, isCached = true) }
+                            withContext(Dispatchers.Main.immediate) { libraryIndex.value = cached }
+                        },
+                    ) { progress ->
                         withContext(Dispatchers.Main.immediate) { mutableState.update { it.copy(libraryProgress = progress) } }
                     }
                 }
-                libraryIndex = built
-                publishAlbums()
-                val query = mutableState.value.searchQuery
-                if (mutableState.value.searching && query.isNotBlank()) publishSearchResults(query)
-                else mutableState.update { it.copy(libraryLoading = false, libraryRefreshing = false, libraryProgress = null) }
+                libraryIndex.value = withContext(Dispatchers.Default) { LibraryIndex(built) }
+                prunedTree = root.treeUri
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 mutableState.update {
-                    it.copy(libraryLoading = false, libraryRefreshing = false, libraryProgress = null, message = error.userMessage())
+                    it.copy(
+                        libraryLoading = false, libraryReady = true, libraryRefreshing = false,
+                        libraryProgress = null, message = error.userMessage(),
+                    )
                 }
             }
         }
     }
 
-    private fun publishAlbums() {
-        val index = libraryIndex ?: return
+    private fun publishLibraryContent(albums: List<AlbumGroup>, results: List<LibraryEntry>, sort: AlbumSort,
+        isNewIndex: Boolean, isCached: Boolean) {
         val snapshot = mutableState.value
-        val groups = AlbumLibrary.sort(AlbumLibrary.group(index), snapshot.albumSort)
-        val covers = buildMap {
-            for (group in groups) {
-                val first = group.tracks.firstOrNull() ?: continue
-                val existing = snapshot.albumCovers[group.key]
-                put(group.key, if (existing?.document?.uri == first.uri) existing else FileItem(first))
-            }
+        if (isNewIndex) cancelPreviewLoads(keeping = snapshot.items)
+        val covers = if (!isNewIndex) snapshot.albumCovers else albums.associate { album ->
+            album.key to createFileItem(album.tracks.first())
         }
-        val opened = snapshot.openedAlbumKey
-        val albumItems = opened?.let { key -> groups.firstOrNull { it.key == key }?.tracks?.map(::FileItem) }
+        val opened = albums.firstOrNull { it.key == snapshot.openedAlbumKey }
+        val albumItems = if (!isNewIndex) snapshot.albumItems else opened?.tracks?.map(::createFileItem).orEmpty()
+        val previous = if (isNewIndex) emptyMap() else snapshot.searchItems.associateBy { it.document.uri }
+        val searchItems = results.map { entry ->
+            previous[entry.document.uri] ?: createFileItem(entry.document)
+        }
+        val visibleItems = when {
+            snapshot.searching -> searchItems
+            snapshot.viewingAlbum -> albumItems
+            else -> snapshot.items
+        }
         mutableState.update {
             it.copy(
-                albums = groups,
+                albums = albums,
+                displayedAlbumSort = sort,
                 albumCovers = covers,
-                albumItems = albumItems ?: if (opened == null) emptyList() else it.albumItems,
-                libraryLoading = false,
-                libraryRefreshing = false,
-                libraryProgress = null,
+                albumItems = albumItems,
+                openedAlbumTitle = opened?.title ?: it.openedAlbumTitle,
+                searchItems = searchItems,
+                selected = it.selected.intersect(visibleItems.map { item -> item.document.uri }.toSet()),
+                libraryLoading = isCached && it.libraryLoading,
+                libraryReady = true,
+                showingCachedLibrary = isCached,
+                libraryRefreshing = isCached && it.libraryRefreshing,
+                libraryProgress = if (isCached) it.libraryProgress else null,
             )
         }
     }
+
+    private fun createFileItem(document: MusicDocument): FileItem = FileItem(document, libraryIndex.value?.track(document))
 
     private fun openAlbum(key: String) {
         val album = mutableState.value.albums.firstOrNull { it.key == key } ?: return
@@ -411,7 +455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 openedAlbumKey = album.key,
                 openedAlbumTitle = album.title,
-                albumItems = album.tracks.map(::FileItem),
+                albumItems = album.tracks.map(::createFileItem),
                 selected = emptySet(),
                 fileMenuExpanded = false,
             )
@@ -421,7 +465,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun leaveAlbum() {
         if (mutableState.value.openedAlbumKey == null) return
-        cancelPreviewLoads()
+        cancelPreviewLoads(keeping = mutableState.value.albumCovers.values)
         mutableState.update { it.copy(openedAlbumKey = null, openedAlbumTitle = null, albumItems = emptyList(), selected = emptySet()) }
     }
 
@@ -466,13 +510,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 requestedDirectory = root.uri
                 libraryJob?.cancel()
                 libraryJob = null
-                libraryIndex = null
+                libraryIndex.value = null
                 mutableState.update {
                     it.copy(treeUri = uri, root = root, directory = root, items = emptyList(),
                         selected = emptySet(), storageGranted = true, storageError = null, recoveryError = null,
                         albums = emptyList(), albumCovers = emptyMap(), albumItems = emptyList(),
                         openedAlbumKey = null, openedAlbumTitle = null,
-                        libraryLoading = false, libraryRefreshing = false, libraryProgress = null)
+                        libraryLoading = false, libraryReady = false, showingCachedLibrary = false, libraryRefreshing = false, libraryProgress = null)
                 }
                 if (previous != null && previous != uri) {
                     withContext(LocalFileWork.dispatcher) { runCatching { container.repository.releaseTree(previous) } }
@@ -500,14 +544,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cancelPreviewLoads()
             libraryJob?.cancel()
             libraryJob = null
-            libraryIndex = null
+            libraryIndex.value = null
             mutableState.update {
                 it.copy(root = null, directory = null, items = emptyList(), selected = emptySet(),
                     storageGranted = false, loading = false, refreshing = false, scanProgress = null, showingCachedContent = false,
                     storageError = if (tree == null) null else "文件夹授权已失效，请重新选择原文件夹",
                     albums = emptyList(), albumCovers = emptyMap(), albumItems = emptyList(),
                     openedAlbumKey = null, openedAlbumTitle = null,
-                    libraryLoading = false, libraryRefreshing = false, libraryProgress = null)
+                    libraryLoading = false, libraryReady = false, showingCachedLibrary = false, libraryRefreshing = false, libraryProgress = null)
             }
             return
         }
@@ -572,7 +616,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val old = previous[document.uri]?.takeIf { item ->
                             !userInitiated && document.matchesContent(item.document.name, item.document.size, item.document.modified)
                         }
-                        FileItem(document, old?.preview?.value?.track)
+                        val track = if (userInitiated) null else libraryIndex.value?.track(document) ?: old?.preview?.value?.track
+                        FileItem(document, track)
                     },
                         selected = it.selected.intersect(documents.map(MusicDocument::uri).toSet()),
                         loading = false, refreshing = false, scanProgress = null, showingCachedContent = false,
@@ -596,9 +641,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun cancelPreviewLoads() {
-        previewJobs.values.forEach(Job::cancel)
-        previewJobs.clear()
+    private fun cancelPreviewLoads(keeping: Collection<FileItem> = emptyList()) {
+        val keep = keeping.toHashSet()
+        previewJobs.entries.removeAll { (item, job) ->
+            if (item in keep) false
+            else {
+                job.cancel()
+                true
+            }
+        }
         // Outgoing pages may still need these previews before capturing their frozen frame.
         // Drop/copy rows on list replacement; never clear the detached rows in place.
     }
@@ -610,7 +661,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         previewJobs[item] = viewModelScope.launch {
             try {
                 previewSlots.withPermit {
-                    container.repository.preview(item.document, cachedOnly = snapshot.showingCachedContent) { preview ->
+                    container.repository.preview(
+                        item.document,
+                        cachedOnly = snapshot.isCachedPreview(item),
+                    ) { preview ->
                         withContext(Dispatchers.Main.immediate) {
                             currentCoroutineContext().ensureActive()
                             mutableState.value.acceptPreview(item, preview)
@@ -763,7 +817,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun scheduleCachePruning(root: MusicDocument) {
-        if (prunedTree == root.treeUri || pruneJob?.isActive == true) return
+        if (prunedTree == root.treeUri || pruneJob?.isActive == true || libraryJob?.isActive == true) return
         pruneJob = viewModelScope.launch {
             try {
                 withContext(LocalFileWork.dispatcher) { container.repository.pruneMissingCacheEntries(root) }
@@ -781,40 +835,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun leaveSearch() {
         if (!mutableState.value.searching) return
-        searchQueries.value = ""
         mutableState.update {
             it.copy(
                 searching = false, searchQuery = "", searchItems = emptyList(),
                 selected = emptySet(),
-            )
-        }
-    }
-
-    private fun runSearch(query: String) {
-        val snapshot = mutableState.value
-        if (!snapshot.searching || query.isBlank()) return
-        if (libraryIndex != null) {
-            publishSearchResults(query)
-            return
-        }
-        loadLibrary()
-    }
-
-    private fun publishSearchResults(query: String) {
-        val index = libraryIndex ?: return
-        val snapshot = mutableState.value
-        val results = filterSearch(index, query, snapshot.fileSort, snapshot.sortDescending)
-        val previous = snapshot.searchItems.associateBy { it.document.uri }
-        mutableState.update {
-            it.copy(
-                searchItems = results.map { entry ->
-                    previous[entry.document.uri]?.takeIf { item -> item.document == entry.document }
-                        ?: FileItem(entry.document, entry.track)
-                },
-                libraryLoading = false,
-                libraryRefreshing = false,
-                libraryProgress = null,
-                selected = it.selected.intersect(results.map { entry -> entry.document.uri }.toSet()),
             )
         }
     }
@@ -843,20 +867,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
-private fun UserPreferences.applyTo(state: MainUiState): MainUiState {
-    val albums = if (state.albumSort == albumSort) state.albums else AlbumLibrary.sort(state.albums, albumSort)
-    return state.copy(
-        themeMode = themeMode,
-        dynamicColor = dynamicColor,
-        fileSort = fileSort,
-        sortDescending = sortDescending,
-        formatLyricsTimeline = formatLyricsTimeline,
-        mp3TagVersion = mp3TagVersion,
-        scrapeSources = scrapeSources,
-        recursive = recursive,
-        audioFilters = audioFilters,
-        albumSort = albumSort,
-        albumMinColumns = albumMinColumns,
-        albums = albums,
+private fun UserPreferences.applyTo(state: MainUiState): MainUiState = state.copy(
+    themeMode = themeMode,
+    dynamicColor = dynamicColor,
+    fileSort = fileSort,
+    sortDescending = sortDescending,
+    formatLyricsTimeline = formatLyricsTimeline,
+    mp3TagVersion = mp3TagVersion,
+    scrapeSources = scrapeSources,
+    recursive = recursive,
+    audioFilters = audioFilters,
+    albumSort = albumSort,
+    albumMinColumns = albumMinColumns,
+)
+
+private data class LibraryRequest(
+    val index: LibraryIndex?,
+    val albumSort: AlbumSort,
+    val query: String?,
+    val fileSort: FileSort,
+    val descending: Boolean,
+) {
+    constructor(index: LibraryIndex?, state: MainUiState) : this(
+        index, state.albumSort, state.searchQuery.takeIf { state.searching }, state.fileSort, state.sortDescending,
     )
 }

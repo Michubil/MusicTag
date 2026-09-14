@@ -12,19 +12,22 @@ data class AlbumGroup(
     val artist: String?,
     val year: Int?,
     val tracks: List<MusicDocument>,
-)
+) {
+    val indexLetter: String = AlbumLibrary.indexLetter(title)
+}
 
 internal object AlbumLibrary {
     const val UnknownTitle = "未知专辑"
 
     fun group(entries: List<LibraryEntry>): List<AlbumGroup> = entries.groupBy(::key).map { (key, members) ->
         val title = displayTitle(members.first().track?.album)
-        val artist = members.firstNotNullOfOrNull { displayArtist(it.track) }
+        val artist = members.mapNotNull { displayArtist(it.track) }
+            .distinctBy { it.lowercase(Locale.ROOT) }.singleOrNull()
         AlbumGroup(key, title, artist, year(members), members.map(LibraryEntry::document))
     }
 
     fun sort(groups: List<AlbumGroup>, sort: AlbumSort): List<AlbumGroup> = when (sort) {
-        AlbumSort.TITLE -> groups.sortedWith(compareBy<AlbumGroup> { letterRank(indexLetter(it.title)) }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+        AlbumSort.TITLE -> groups.sortedWith(compareBy<AlbumGroup> { letterRank(it.indexLetter) }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title })
         AlbumSort.YEAR -> groups.sortedWith(compareByDescending<AlbumGroup> { it.year ?: Int.MIN_VALUE }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title })
         AlbumSort.COUNT -> groups.sortedWith(compareByDescending<AlbumGroup> { it.tracks.size }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title })
     }
@@ -50,11 +53,8 @@ internal object AlbumLibrary {
         return if (letter != null && letter in 'A'..'Z') letter.toString() else "#"
     }
 
-    private fun key(entry: LibraryEntry): String {
-        val album = entry.track?.album?.trim().orEmpty().lowercase(Locale.ROOT)
-        val artist = displayArtist(entry.track)?.lowercase(Locale.ROOT).orEmpty()
-        return "$album\u001f$artist"
-    }
+    private fun key(entry: LibraryEntry): String =
+        "album:" + entry.track?.album?.trim().orEmpty().lowercase(Locale.ROOT)
 
     private fun displayTitle(album: String?): String = album?.trim()?.takeIf { it.isNotEmpty() } ?: UnknownTitle
 
@@ -79,6 +79,9 @@ internal object AlbumLibrary {
 
     private fun latinize(title: String): String {
         val loaded = hanLatin ?: return title
-        return runCatching { loaded.second.invoke(loaded.first, title) as String }.getOrDefault(title)
+        val translator = loaded.first ?: return title
+        return synchronized(translator) {
+            runCatching { loaded.second.invoke(translator, title) as String }.getOrDefault(title)
+        }
     }
 }

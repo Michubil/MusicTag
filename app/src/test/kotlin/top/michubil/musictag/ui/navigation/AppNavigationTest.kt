@@ -22,6 +22,7 @@ class AppNavigationTest {
         }
         assertEquals(TabDecision.PopToRoot, tabDecision(Routes.About, Routes.Settings))
         assertEquals(TabDecision.PopToRoot, tabDecision(Routes.Album, Routes.Albums))
+        assertEquals(TabDecision.PopToRoot, tabDecision(Routes.AlbumSearch, Routes.Albums))
     }
 
     @Test
@@ -31,6 +32,8 @@ class AppNavigationTest {
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.About, Routes.Files))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Albums, Routes.Settings))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Album, Routes.Files))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.AlbumSearch, Routes.Files))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.AlbumSearch, Routes.Settings))
         assertEquals(TabDecision.PopToRoot, tabDecision(Routes.Options, Routes.Albums, Routes.Albums))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Options, Routes.Albums, Routes.Files))
     }
@@ -45,6 +48,7 @@ class AppNavigationTest {
         assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.About, Routes.Files))
         assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.Settings, Routes.Albums))
         assertEquals(AppPageMotion.Open, resolvePageMotion(Routes.Albums, Routes.Album))
+        assertEquals(AppPageMotion.Open, resolvePageMotion(Routes.Albums, Routes.AlbumSearch))
     }
 
     @Test
@@ -65,6 +69,7 @@ class AppNavigationTest {
         assertEquals(null, browserDirectoryUri(Routes.Settings, root, child))
         assertEquals(null, browserDirectoryUri(Routes.About, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Albums, root, child))
+        assertEquals(null, browserDirectoryUri(Routes.AlbumSearch, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Search, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Files, null, child))
     }
@@ -81,6 +86,21 @@ class AppNavigationTest {
         assertTrue(shouldLeaveSearch(Routes.Albums))
         assertTrue(shouldLeaveSearch(Routes.Album))
         assertFalse(shouldReturnToBrowser(Routes.Search, MainUiState()))
+    }
+
+    @Test
+    fun albumSearchStaysOnTheAlbumsTabAndReusesFileSearch() {
+        assertEquals(Routes.Albums, rootRoute(Routes.AlbumSearch))
+        assertTrue(isSearchRoute(Routes.AlbumSearch))
+        assertTrue(isFileWorkRoute(Routes.AlbumSearch))
+        assertTrue(isAlbumFileWorkRoute(Routes.Album))
+        assertTrue(isAlbumFileWorkRoute(Routes.AlbumSearch))
+        assertFalse(isAlbumFileWorkRoute(Routes.Albums))
+        assertFalse(isBrowserRoute(Routes.AlbumSearch))
+        assertFalse(isDirectoryRoute(Routes.AlbumSearch))
+        assertFalse(shouldLeaveSearch(Routes.AlbumSearch))
+        assertTrue(shouldLeaveSearch(Routes.Albums))
+        assertFalse(shouldReturnToBrowser(Routes.AlbumSearch, MainUiState()))
     }
 
     @Test

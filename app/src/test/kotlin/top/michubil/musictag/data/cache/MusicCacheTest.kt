@@ -14,6 +14,11 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.FilePreview
+import top.michubil.musictag.data.AlbumSort
+import top.michubil.musictag.data.FileSort
+import top.michubil.musictag.data.LibraryEntry
+import top.michubil.musictag.data.LibraryIndex
+import top.michubil.musictag.data.filterSearch
 import top.michubil.musictag.data.model.LocalTrack
 import top.michubil.musictag.data.storage.MusicDocument
 import java.nio.file.Files
@@ -27,6 +32,8 @@ class MusicCacheTest {
     private val directory = MusicDocument("tree", "folder", null, "专辑", isDirectory = true, relativePath = "专辑")
     private fun song(index: Int) = MusicDocument("tree", "song-$index", "folder", "$index.flac",
         size = 100, modified = 1000, relativePath = "专辑/$index.flac")
+    private fun libraryEntry(document: MusicDocument) = LibraryEntry(document, listOf(document.name, "ＴＥＳＴ", "制作人甲"),
+        LocalTrack(document.name, "歌曲", listOf("歌手甲", "歌手乙"), "专辑", null, 2024, listOf("专辑艺术家")))
 
     @Before
     fun setUp() {
@@ -40,6 +47,101 @@ class MusicCacheTest {
 
     private inline fun <T> withDatabase(database: MusicCacheDatabase, block: (MusicCacheDatabase) -> T): T =
         try { block(database) } finally { database.close() }
+
+    @Test
+    fun librarySurvivesReopenWithAlbumFieldsAndSearchTextBeyondTheVisibleTrack() = runBlocking(Dispatchers.IO) {
+        val temporaryDirectory = Files.createTempDirectory("music-library-cache-").toFile()
+        val path = temporaryDirectory.resolve("cache.db")
+        val entries = (1..497).map { libraryEntry(song(it)) }
+        try {
+            withDatabase(Room.databaseBuilder(app, MusicCacheDatabase::class.java, path.absolutePath).build()) { disk ->
+                val first = MusicCache(app, disk)
+                first.storeLibrary(directory, AudioFilters(), entries, first.revision())
+            }
+            withDatabase(Room.databaseBuilder(app, MusicCacheDatabase::class.java, path.absolutePath).build()) { disk ->
+                val reopened = MusicCache(app, disk)
+                val restored = requireNotNull(reopened.library(directory, AudioFilters()))
+                assertEquals(entries.map { it.document }, restored.map { it.document })
+                assertEquals(entries.map { it.track }, restored.map { it.track })
+                val index = LibraryIndex(restored, isCached = true)
+                val album = index.albums(AlbumSort.TITLE).single()
+                assertEquals(2024, album.year)
+                assertEquals("专辑艺术家", album.artist)
+                assertEquals(497, album.tracks.size)
+                assertEquals(497, filterSearch(index, "test 制作人甲", FileSort.NAME, false).size)
+                val known = reopened.libraryEntries(entries.map { it.document })
+                assertEquals(entries.map { it.document }.toSet(), known.keys)
+            }
+        } finally {
+            temporaryDirectory.listFiles().orEmpty().forEach { it.delete() }
+            temporaryDirectory.delete()
+        }
+    }
+
+    @Test
+    fun libraryChecksFreshStatsAndFiltersAndKeepsFreshDocumentCapabilities() = runBlocking(Dispatchers.IO) {
+        val entries = (1..6).map { libraryEntry(song(it)) }
+        cache.storeLibrary(directory, AudioFilters(), entries, cache.revision())
+        assertNull(cache.library(directory.copy(uri = "other-root"), AudioFilters()))
+        assertNull(cache.library(directory, AudioFilters(20)))
+        assertNull(cache.library(directory, AudioFilters(excludedPaths = listOf("专辑"))))
+        val changed = listOf(song(1).copy(size = 101), song(2).copy(modified = 1001), song(3).copy(name = "renamed.flac"),
+            song(4).copy(treeUri = "other-tree"), song(5).copy(modified = null), song(6).copy(uri = "new-uri"))
+        assertTrue(cache.libraryEntries(changed).isEmpty())
+        val relocated = song(1).copy(parentUri = "new-parent", relativePath = "另一个专辑/1.flac", canRename = true)
+        val reused = requireNotNull(cache.libraryEntries(listOf(relocated))[relocated])
+        assertEquals(relocated, reused.document)
+        assertEquals(entries.first().track, reused.track)
+    }
+
+    @Test
+    fun libraryInvalidationRejectsStaleWritesAndKeepsUnaffectedMetadata() = runBlocking(Dispatchers.IO) {
+        val entries = (1..3).map { libraryEntry(song(it)) }
+        val oldRevision = cache.revision()
+        cache.storeLibrary(directory, AudioFilters(), entries, oldRevision)
+        cache.invalidate(song(1))
+        cache.storeLibrary(directory, AudioFilters(), entries, oldRevision)
+        assertNull(cache.library(directory, AudioFilters()))
+        assertEquals(setOf(song(2), song(3)), cache.libraryEntries(entries.map { it.document }).keys)
+        cache.storeLibrary(directory, AudioFilters(), entries.drop(1), cache.revision())
+        cache.retain(directory.treeUri, setOf(directory.uri, song(2).uri))
+        assertNull(cache.library(directory, AudioFilters()))
+        assertEquals(setOf(song(2)), cache.libraryEntries(entries.map { it.document }).keys)
+        cache.clearTree(directory.treeUri)
+        assertTrue(cache.libraryEntries(entries.map { it.document }).isEmpty())
+    }
+
+    @Test
+    fun invalidationDuringTreeWalkCannotPruneNewRowsOrAuthorizeAStaleSnapshotWrite() = runBlocking(Dispatchers.IO) {
+        val entries = (1..2).map { libraryEntry(song(it)) }
+        cache.storeLibrary(directory, AudioFilters(), entries, cache.revision())
+        val scanRevision = cache.revision()
+        cache.invalidate(song(1))
+        val updated = listOf(libraryEntry(song(1).copy(size = 200)), entries[1], libraryEntry(song(3)))
+        cache.storeLibrary(directory, AudioFilters(), updated, cache.revision())
+        assertNull(cache.retain(directory.treeUri, setOf(directory.uri, song(1).uri, song(2).uri), scanRevision))
+        cache.storeLibrary(directory, AudioFilters(), entries, scanRevision)
+        assertEquals(updated.map { it.document }, cache.library(directory, AudioFilters())?.map { it.document })
+    }
+
+    @Test
+    fun incompleteAndCorruptLibraryRowsAreRetriedWithoutDisablingOtherCacheEntries() = runBlocking(Dispatchers.IO) {
+        val valid = libraryEntry(song(1))
+        val unreliable = libraryEntry(song(2).copy(modified = null))
+        val failed = LibraryEntry(song(3), listOf("3.flac"), null)
+        cache.storeLibrary(directory, AudioFilters(), listOf(valid, unreliable, failed), cache.revision())
+        assertNull(cache.library(directory, AudioFilters()))
+        assertEquals(setOf(song(1)), cache.libraryEntries(listOf(valid.document, unreliable.document, failed.document)).keys)
+        cache.storeLibrary(directory, AudioFilters(), listOf(valid, libraryEntry(song(2))), cache.revision())
+        val corrupt = database.cache().libraryEntries(directory.treeUri).first().copy(track = "broken JSON")
+        database.cache().putLibraryEntries(listOf(corrupt))
+        assertNull(cache.library(directory, AudioFilters()))
+        assertEquals(setOf(song(2)), cache.libraryEntries(listOf(song(1), song(2))).keys)
+        cache.storeDurations(mapOf(song(1) to 30_000L), cache.revision())
+        assertEquals(mapOf(song(1) to 30_000L), cache.durations(listOf(song(1))))
+        cache.storeLibrary(directory, AudioFilters(), emptyList(), cache.revision())
+        assertEquals(emptyList<LibraryEntry>(), cache.library(directory, AudioFilters()))
+    }
 
     @Test
     fun durationsSurviveReopenAndRespectStatsAndGrantIdentity() = runBlocking(Dispatchers.IO) {
@@ -70,6 +172,7 @@ class MusicCacheTest {
         val files = (1..3).map(::song)
         cache.storeDirectory(directory, files, cache.revision())
         cache.storeDurations(files.associateWith { 30_000L }, cache.revision())
+        cache.storeLibrary(directory, AudioFilters(), files.map(::libraryEntry), cache.revision())
         fun childRowId(): Long = database.openHelper.readableDatabase.query(
             "SELECT rowid FROM directory_children WHERE uri = 'song-1'").use {
             assertTrue(it.moveToFirst())
@@ -82,6 +185,8 @@ class MusicCacheTest {
         cache.storeDirectory(directory, updated, cache.revision())
         assertEquals(updated, cache.directory("tree", "folder", AudioFilters())?.children)
         assertEquals(mapOf(files[0] to 30_000L), cache.durations(files))
+        assertNull(cache.library(directory, AudioFilters()))
+        assertEquals(setOf(files[0]), cache.libraryEntries(files).keys)
         assertEquals(2, database.cache().childCount())
     }
 
@@ -158,17 +263,26 @@ class MusicCacheTest {
     }
 
     @Test
-    fun trimmingDirectorySnapshotsDropsOrphanPreviews() = runBlocking(Dispatchers.IO) {
+    fun trimmingDirectorySnapshotsKeepsLibraryPreviewsUntilACompletedSweepConfirmsDeletion() = runBlocking(Dispatchers.IO) {
         val oldest = MusicDocument("tree", "old-folder", null, "old", isDirectory = true)
-        val ghost = song(1).copy(parentUri = "old-folder", relativePath = "old/1.flac")
-        val track = LocalTrack(ghost.name, "Gone", listOf("Artist"), "Album", null)
-        cache.storeDirectory(oldest, listOf(ghost), cache.revision())
-        cache.storePreview(ghost, FilePreview(track, null), cache.revision())
-        assertEquals(track, cache.preview(ghost)?.track)
+        val file = song(1).copy(parentUri = "old-folder", relativePath = "old/1.flac")
+        val unvisited = song(2).copy(parentUri = "unvisited-folder")
+        val track = LocalTrack(file.name, "Song", listOf("Artist"), "Album", null)
+        cache.storeDirectory(oldest, listOf(file), cache.revision())
+        cache.storePreview(file, FilePreview(track, null), cache.revision())
+        cache.storePreview(unvisited, FilePreview(track.copy(fileName = unvisited.name), null), cache.revision())
+        cache.storeDurations(mapOf(file to 30_000L, unvisited to 60_000L), cache.revision())
         repeat(128) { index ->
             cache.storeDirectory(MusicDocument("tree", "d$index", null, "d$index", isDirectory = true), emptyList(), cache.revision())
         }
-        assertNull(cache.preview(ghost))
+        assertNull(cache.directory("tree", "old-folder", AudioFilters()))
+        assertEquals(track, cache.preview(file)?.track)
+        assertEquals(track.copy(fileName = unvisited.name), cache.preview(unvisited)?.track)
+        assertEquals(mapOf(file to 30_000L, unvisited to 60_000L), cache.durations(listOf(file, unvisited)))
+        cache.retain("tree", setOf(oldest.uri, file.uri))
+        assertEquals(track, cache.preview(file)?.track)
+        assertNull(cache.preview(unvisited))
+        assertEquals(mapOf(file to 30_000L), cache.durations(listOf(file, unvisited)))
     }
 
     @Test

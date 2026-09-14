@@ -38,7 +38,9 @@ class FileWorkTest {
             assertTrue(results[0].isSuccess)
             assertTrue(results[1].isFailure)
             assertTrue(results[2].isSuccess)
-            assertEquals((0..3).map { ScanProgress(it, 3) }, progress)
+            assertEquals(ScanProgress(0, 3), progress.first())
+            assertEquals(ScanProgress(3, 3), progress.last())
+            assertTrue(progress.zipWithNext().all { (first, second) -> first.completed < second.completed })
         }
     }
 }

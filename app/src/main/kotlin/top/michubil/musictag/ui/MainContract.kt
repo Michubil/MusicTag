@@ -71,6 +71,8 @@ data class MainUiState(
     val searchQuery: String = "",
     val searchItems: List<FileItem> = emptyList(),
     val libraryLoading: Boolean = false,
+    val libraryReady: Boolean = false,
+    val showingCachedLibrary: Boolean = false,
     val libraryRefreshing: Boolean = false,
     val libraryProgress: ScanProgress? = null,
     val checkingUpdate: Boolean = false,
@@ -81,6 +83,7 @@ data class MainUiState(
     val openedAlbumKey: String? = null,
     val openedAlbumTitle: String? = null,
     val albumSort: AlbumSort = AlbumSort.TITLE,
+    val displayedAlbumSort: AlbumSort = AlbumSort.TITLE,
     val albumMinColumns: Int = 3,
     val albumSortDialog: Boolean = false,
     val albumColumnsDialog: Boolean = false,
@@ -97,8 +100,8 @@ data class MainUiState(
         else -> items
     }
     val canSelectFiles: Boolean get() = !busy && storageGranted && storageError == null && recoveryError == null && when {
-        searching -> true
-        viewingAlbum -> !libraryLoading
+        searching -> !showingCachedLibrary
+        viewingAlbum -> !libraryLoading && !showingCachedLibrary
         else -> !loading && !showingCachedContent
     }
     val canRefreshLibrary: Boolean get() = storageGranted && !libraryLoading && !busy && storageError == null && recoveryError == null

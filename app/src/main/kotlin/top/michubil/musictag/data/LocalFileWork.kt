@@ -8,6 +8,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
+
+data class ScanProgress(val completed: Int, val total: Int)
 
 /** Shared local I/O budget, sized to the processors Android makes available to this process. */
 internal object LocalFileWork {
@@ -26,6 +30,7 @@ internal object LocalFileWork {
         val progressLock = Mutex()
         var completed = 0
         onProgress(ScanProgress(0, items.size))
+        var reportedAt = TimeSource.Monotonic.markNow()
         List(minOf(parallelism, items.size)) {
             launch(dispatcher) {
                 while (true) {
@@ -36,7 +41,10 @@ internal object LocalFileWork {
                     ensureActive()
                     progressLock.withLock {
                         completed++
-                        onProgress(ScanProgress(completed, items.size))
+                        if (completed == items.size || reportedAt.elapsedNow() >= 100.milliseconds) {
+                            onProgress(ScanProgress(completed, items.size))
+                            reportedAt = TimeSource.Monotonic.markNow()
+                        }
                     }
                 }
             }

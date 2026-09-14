@@ -16,6 +16,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.FilePreview
+import top.michubil.musictag.data.LibraryEntry
 import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.model.LocalTrack
 import top.michubil.musictag.data.storage.MusicDocument
@@ -65,6 +66,8 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
                 dao.clearDirectories(tree)
                 dao.clearDurations(tree)
                 dao.clearPreviews(tree)
+                dao.removeLibrarySnapshot(tree)
+                dao.clearLibraryEntries(tree)
             }
         }
     }
@@ -74,6 +77,7 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
             database.runInTransaction {
                 dao.removeDuration(document.treeUri, document.uri)
                 dao.removePreview(document.treeUri, document.uri)
+                dao.invalidateLibraryFiles(document.treeUri, listOf(document.uri))
                 dao.removeDirectory(document.treeUri, document.uri)
                 document.parentUri?.let { dao.removeDirectory(document.treeUri, it) }
             }
@@ -118,11 +122,13 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
                 val previous = dao.children(directory.treeUri, directory.uri).associateBy { it.uri }
                 val removed = previous.keys.filter { it !in rows }
                 val invalid = previous.values.filter { it.payload != rows[it.uri] }.map { it.uri }
+                if (invalid.isNotEmpty()) generation.incrementAndGet()
                 invalid.chunked(400).forEach { uris ->
                     context.ensureActive()
                     dao.removeDurations(directory.treeUri, uris)
                     dao.removePreviews(directory.treeUri, uris)
                     dao.removeDirectories(directory.treeUri, uris)
+                    dao.invalidateLibraryFiles(directory.treeUri, uris)
                 }
                 // One row per child avoids putting a whole large folder into a CursorWindow row.
                 if (children.size <= 50000) {
@@ -137,8 +143,8 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
                         val oldest = dao.oldestDirectory() ?: break
                         dao.removeDirectory(oldest.tree, oldest.uri)
                     }
-                    dao.removeOrphanPreviews()
-                    dao.removeOrphanDurations()
+                    // Album/search previews also belong to directories never opened in the browser.
+                    // Their own limits and completed tree sweeps govern retention, not snapshot eviction.
                 } else dao.removeDirectory(directory.treeUri, directory.uri)
                 context.ensureActive()
             }
@@ -146,16 +152,86 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
     }
 
     /** Drop file rows that a completed tree walk no longer observed. Cancellation still finishes the delete. */
-    suspend fun retain(tree: String, liveUris: Set<String>): Unit = withContext(NonCancellable) {
-        access(invalidate = true) { dao ->
+    suspend fun retain(tree: String, liveUris: Set<String>, revision: Long = revision()): Long? = withContext(NonCancellable) {
+        access { dao ->
+            if (revision != generation.get()) return@access null
+            val retainedRevision = generation.incrementAndGet()
             database.runInTransaction {
                 dao.previewUris(tree).filter { it !in liveUris }.chunked(400).forEach { dao.removePreviews(tree, it) }
                 dao.durationUris(tree).filter { it !in liveUris }.chunked(400).forEach { dao.removeDurations(tree, it) }
                 dao.directoryUris(tree).filter { it !in liveUris }.chunked(400).forEach { dao.removeDirectories(tree, it) }
                 dao.childUris(tree).filter { it !in liveUris }.chunked(400).forEach { dao.removeChildrenByUri(tree, it) }
+                dao.libraryUris(tree).filter { it !in liveUris }.chunked(400).forEach { dao.invalidateLibraryFiles(tree, it) }
             }
+            retainedRevision
         }
     }
+
+    /** A complete snapshot is for early display only; individual rows require fresh provider stats. */
+    suspend fun library(root: MusicDocument, filters: AudioFilters): List<LibraryEntry>? = withContext(LocalFileWork.dispatcher) {
+        val revision = revision()
+        val rows = access { dao ->
+            val snapshot = dao.librarySnapshot(root.treeUri) ?: return@access null
+            if (snapshot.root != root.uri || snapshot.filters != filters.cacheKey()) return@access null
+            dao.libraryEntries(root.treeUri).takeIf { it.size == snapshot.entryCount }
+        } ?: return@withContext null
+        val entries = rows.map {
+            currentCoroutineContext().ensureActive()
+            it.entry() ?: return@withContext null
+        }
+        entries.takeIf { revision == generation.get() }
+    }
+
+    suspend fun libraryEntries(documents: List<MusicDocument>): Map<MusicDocument, LibraryEntry> = withContext(LocalFileWork.dispatcher) {
+        val revision = revision()
+        val known = mutableMapOf<MusicDocument, LibraryEntry>()
+        documents.filter { it.hasReliableStats }.groupBy { it.treeUri }.forEach { (tree, files) ->
+            files.distinctBy { it.uri }.chunked(400).forEach { batch ->
+                currentCoroutineContext().ensureActive()
+                val byUri = batch.associateBy { it.uri }
+                val rows = access { it.libraryEntriesForFiles(tree, byUri.keys.toList()) } ?: return@withContext emptyMap()
+                rows.forEach eachRow@{ row ->
+                    val entry = row.entry() ?: return@eachRow
+                    val fresh = byUri[row.uri] ?: return@eachRow
+                    if (fresh.matchesContent(entry.document.name, entry.document.size, entry.document.modified)) {
+                        known[fresh] = LibraryEntry(fresh, entry.searchText, entry.track)
+                    }
+                }
+            }
+        }
+        if (revision == generation.get()) known else emptyMap()
+    }
+
+    suspend fun storeLibrary(root: MusicDocument, filters: AudioFilters, entries: List<LibraryEntry>, revision: Long): Unit =
+        withContext(LocalFileWork.dispatcher) {
+            val context = currentCoroutineContext()
+            val rows = if (entries.size > 20000) emptyList() else entries.mapIndexedNotNull { ordinal, entry ->
+                context.ensureActive()
+                val document = entry.document
+                val track = entry.track ?: return@mapIndexedNotNull null
+                if (document.treeUri != root.treeUri || !document.hasReliableStats) return@mapIndexedNotNull null
+                val row = LibraryEntryRow(root.treeUri, document.uri, ordinal, document.json().toString(), entry.searchText, track.json().toString())
+                row.takeIf { (it.document.length + it.searchText.length + it.track.length) <= 64 * 1024 }
+            }
+            val snapshot = LibrarySnapshotRow(root.treeUri, root.uri, filters.cacheKey(), entries.size)
+            access { dao ->
+                if (revision != generation.get()) return@access
+                database.runInTransaction {
+                    val previous = dao.libraryEntries(root.treeUri).associateBy { it.uri }
+                    val liveUris = rows.mapTo(HashSet()) { it.uri }
+                    previous.keys.filter { it !in liveUris }.chunked(400).forEach {
+                        context.ensureActive()
+                        dao.removeLibraryEntries(root.treeUri, it)
+                    }
+                    rows.filter { it != previous[it.uri] }.chunked(400).forEach { context.ensureActive(); dao.putLibraryEntries(it) }
+                    // Failed reads and providers without reliable stats must be retried next time.
+                    if (rows.size == entries.size) {
+                        if (snapshot != dao.librarySnapshot(root.treeUri)) dao.putLibrarySnapshot(snapshot)
+                    } else dao.removeLibrarySnapshot(root.treeUri)
+                    context.ensureActive()
+                }
+            }
+        }
 
     suspend fun durations(documents: List<MusicDocument>): Map<MusicDocument, Long> = withContext(LocalFileWork.dispatcher) {
         val revision = revision()
@@ -222,8 +298,7 @@ internal class MusicCache(context: Context, databaseOverride: MusicCacheDatabase
                     output.toByteArray().also { if (it.size > 128 * 1024) return@withContext }
                 }
             }
-            val payload = JSONObject().put("title", track.title).put("artists", JSONArray(track.artists))
-                .put("album", track.album).put("duration", track.durationMs)
+            val payload = track.json()
                 .apply { if (document.extension == "mp3") put("mp3ArtworkVersion", MP3_ARTWORK_VERSION) }.toString()
             if (payload.toByteArray(Charsets.UTF_8).size > 64 * 1024) return@withContext
             PreviewRow(document.treeUri, document.uri, document.name, requireNotNull(document.size),
@@ -256,10 +331,30 @@ private fun JSONObject.nullableString(key: String): String? = if (isNull(key)) n
 private fun JSONObject.nullableLong(key: String): Long? = if (isNull(key)) null else getLong(key)
 private fun JSONArray.strings(): List<String> = List(length()) { getString(it) }
 
+private fun AudioFilters.cacheKey(): String = JSONObject().put("minimumSeconds", minimumSeconds)
+    .put("excludedPaths", JSONArray(excludedPaths)).toString()
+
+private fun MusicCacheDao.invalidateLibraryFiles(tree: String, uris: List<String>) {
+    invalidateLibrarySnapshot(tree, uris)
+    removeLibraryEntries(tree, uris)
+}
+
+private fun LocalTrack.json(): JSONObject = JSONObject().put("title", title).put("artists", JSONArray(artists))
+    .put("album", album).put("duration", durationMs).put("year", year).put("albumArtists", JSONArray(albumArtists))
+
+private fun JSONObject.track(fileName: String) = LocalTrack(fileName, nullableString("title"),
+    getJSONArray("artists").strings(), nullableString("album"), nullableLong("duration"),
+    nullableLong("year")?.toInt(), getJSONArray("albumArtists").strings())
+
+private fun LibraryEntryRow.entry(): LibraryEntry? = try {
+    val source = JSONObject(document).document()
+    if (source.treeUri != tree || source.uri != uri || !source.hasReliableStats) null
+    else LibraryEntry(source, searchText, JSONObject(track).track(source.name))
+} catch (_: JSONException) { null }
+
 private fun parseTrack(document: MusicDocument, payload: String): LocalTrack? = try {
     val track = JSONObject(payload)
     // Older readers cached unclassified APIC pictures as missing artwork.
     if (document.extension == "mp3" && track.optInt("mp3ArtworkVersion", 0) != MP3_ARTWORK_VERSION) null
-    else LocalTrack(document.name, track.nullableString("title"),
-        track.getJSONArray("artists").strings(), track.nullableString("album"), track.nullableLong("duration"))
+    else track.track(document.name)
 } catch (_: JSONException) { null }

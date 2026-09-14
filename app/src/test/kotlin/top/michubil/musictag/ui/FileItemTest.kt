@@ -8,6 +8,36 @@ import top.michubil.musictag.data.storage.MusicDocument
 
 class FileItemTest {
     @Test
+    fun failedPreviewKeepsTheAlreadyIndexedTrack() {
+        val document = MusicDocument("tree", "song", "parent", "song.flac")
+        val track = LocalTrack(document.name, "Song", listOf("Artist"), "Album", null)
+        val item = FileItem(document, track)
+        item.showPreview(FilePreview(null, null))
+        assertEquals(track, item.preview.value.track)
+        val refreshed = track.copy(title = "Updated")
+        item.showPreview(FilePreview(refreshed, null))
+        assertEquals(refreshed, item.preview.value.track)
+    }
+
+    @Test
+    fun cachedLibraryPreviewsNeverReadAudioBeforeValidation() {
+        val document = MusicDocument("tree", "song", "parent", "song.flac")
+        val directoryRow = FileItem(document)
+        val albumRow = FileItem(document)
+        val searchRow = FileItem(document)
+        val cover = FileItem(document)
+        val cached = MainUiState(showingCachedLibrary = true, items = listOf(directoryRow),
+            searchItems = listOf(searchRow), albumItems = listOf(albumRow), albumCovers = mapOf("album" to cover))
+        assertFalse(cached.isCachedPreview(directoryRow))
+        for (item in listOf(albumRow, searchRow, cover)) {
+            assertTrue(cached.isCachedPreview(item))
+            assertFalse(cached.copy(showingCachedLibrary = false).isCachedPreview(item))
+        }
+        assertTrue(cached.copy(showingCachedContent = true).isCachedPreview(directoryRow))
+        assertFalse(cached.isCachedPreview(FileItem(document)))
+    }
+
+    @Test
     fun searchRowsAcceptPreviewsButDetachedRowsWithTheSameUriDoNot() {
         val document = MusicDocument("tree", "song", "parent", "song.mp3")
         val active = FileItem(document)

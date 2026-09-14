@@ -30,8 +30,44 @@ internal data class PreviewRow(
     val track: String, val artwork: ByteArray?, val savedAt: Long,
 )
 
+@Entity(tableName = "library_snapshots", primaryKeys = ["tree"])
+internal data class LibrarySnapshotRow(val tree: String, val root: String, val filters: String, val entryCount: Int)
+
+@Entity(tableName = "library_entries", primaryKeys = ["tree", "uri"], indices = [Index(value = ["tree", "ordinal"])])
+internal data class LibraryEntryRow(val tree: String, val uri: String, val ordinal: Int, val document: String, val searchText: String, val track: String)
+
 @Dao
 internal interface MusicCacheDao {
+    @Query("SELECT * FROM library_snapshots WHERE tree = :tree")
+    fun librarySnapshot(tree: String): LibrarySnapshotRow?
+
+    @Query("SELECT * FROM library_entries WHERE tree = :tree ORDER BY ordinal")
+    fun libraryEntries(tree: String): List<LibraryEntryRow>
+
+    @Query("SELECT * FROM library_entries WHERE tree = :tree AND uri IN (:uris)")
+    fun libraryEntriesForFiles(tree: String, uris: List<String>): List<LibraryEntryRow>
+
+    @Query("SELECT uri FROM library_entries WHERE tree = :tree")
+    fun libraryUris(tree: String): List<String>
+
+    @Upsert
+    fun putLibrarySnapshot(row: LibrarySnapshotRow)
+
+    @Upsert
+    fun putLibraryEntries(rows: List<LibraryEntryRow>)
+
+    @Query("DELETE FROM library_snapshots WHERE tree = :tree")
+    fun removeLibrarySnapshot(tree: String)
+
+    @Query("DELETE FROM library_entries WHERE tree = :tree")
+    fun clearLibraryEntries(tree: String)
+
+    @Query("DELETE FROM library_entries WHERE tree = :tree AND uri IN (:uris)")
+    fun removeLibraryEntries(tree: String, uris: List<String>)
+
+    @Query("DELETE FROM library_snapshots WHERE tree = :tree AND EXISTS (SELECT 1 FROM library_entries WHERE tree = :tree AND uri IN (:uris))")
+    fun invalidateLibrarySnapshot(tree: String, uris: List<String>)
+
     @Query("SELECT * FROM directories WHERE tree = :tree AND uri = :uri")
     fun directory(tree: String, uri: String): DirectoryRow?
 
@@ -67,12 +103,6 @@ internal interface MusicCacheDao {
 
     @Query("DELETE FROM directory_children WHERE tree = :tree AND uri IN (:uris)")
     fun removeChildrenByUri(tree: String, uris: List<String>)
-
-    @Query("DELETE FROM previews WHERE NOT EXISTS (SELECT 1 FROM directory_children c WHERE c.tree = previews.tree AND c.uri = previews.uri)")
-    fun removeOrphanPreviews()
-
-    @Query("DELETE FROM durations WHERE NOT EXISTS (SELECT 1 FROM directory_children c WHERE c.tree = durations.tree AND c.uri = durations.uri)")
-    fun removeOrphanDurations()
 
     @Upsert
     fun putDirectory(row: DirectoryRow)
@@ -127,7 +157,8 @@ internal interface MusicCacheDao {
 }
 
 // Disposable cache only. Recovery records and user settings never live in this database.
-@Database(entities = [DirectoryRow::class, DirectoryChildRow::class, DurationRow::class, PreviewRow::class], version = 2, exportSchema = false)
+@Database(entities = [DirectoryRow::class, DirectoryChildRow::class, DurationRow::class, PreviewRow::class,
+    LibrarySnapshotRow::class, LibraryEntryRow::class], version = 3, exportSchema = false)
 internal abstract class MusicCacheDatabase : RoomDatabase() {
     abstract fun cache(): MusicCacheDao
 }

@@ -142,22 +142,33 @@ class MusicRepository(
     }
 
     internal suspend fun pruneMissingCacheEntries(root: MusicDocument) {
-        browseCache.retain(root.treeUri, scanTreeContents(root).second)
+        val revision = browseCache.revision()
+        browseCache.retain(root.treeUri, scanTreeContents(root).second, revision)
     }
 
     internal suspend fun indexLibrary(
         root: MusicDocument,
         filters: AudioFilters,
+        forceRead: Boolean = false,
+        onCached: suspend (List<LibraryEntry>) -> Unit = {},
         onProgress: suspend (ScanProgress) -> Unit = {},
     ): List<LibraryEntry> {
         val context = currentCoroutineContext()
+        if (forceRead) clearBrowseCache(root.treeUri)
+        else browseCache.library(root, filters)?.let { onCached(it) }
+        val scanRevision = browseCache.revision()
         val (files, liveUris) = scanTreeContents(root)
-        browseCache.retain(root.treeUri, liveUris)
+        val revision = browseCache.retain(root.treeUri, liveUris, scanRevision)
         val searchable = filterAudio(files, filters, onProgress)
-        return LocalFileWork.map(searchable, onProgress) { document ->
+        val known = browseCache.libraryEntries(searchable)
+        val missing = searchable.filterNot(known::containsKey)
+        val loaded = LocalFileWork.map(missing, onProgress) { document ->
             context.ensureActive()
             readLibraryEntry(document)
-        }
+        }.associateBy { it.document }
+        val entries = searchable.map { known[it] ?: loaded.getValue(it) }
+        if (revision != null) browseCache.storeLibrary(root, filters, entries, revision)
+        return entries
     }
 
     private suspend fun scanTreeContents(root: MusicDocument): Pair<List<MusicDocument>, Set<String>> {
@@ -166,7 +177,8 @@ class MusicRepository(
         val files = expandDocuments(listOf(root), recursive = true) { directory ->
             context.ensureActive()
             liveUris.add(directory.uri)
-            visibleChildren(directory).also { children -> children.forEach { liveUris.add(it.uri) } }
+            storage.browsingChildren(directory).filter(::isVisibleChild)
+                .also { children -> children.forEach { liveUris.add(it.uri) } }
         }
         return files to liveUris
     }

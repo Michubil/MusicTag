@@ -31,6 +31,9 @@ object AppDimensions {
     val IdentityIconSize = 80.dp
     val ArtworkSize = 48.dp
     val FloatingActionSize = 56.dp
+    val AlbumIndexWidth = 20.dp
+    val AlbumIndexLetterHeight = 16.dp
+    val AlbumIndexIndicatorSize = 48.dp
 }
 
 object AppSpacing {

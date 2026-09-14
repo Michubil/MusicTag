@@ -1,7 +1,7 @@
 package top.michubil.musictag.data.storage
 
 /** Iterative traversal keeps large/deep trees bounded by their actual contents, not a depth cap. */
-internal fun expandDocuments(
+internal inline fun expandDocuments(
     selection: List<MusicDocument>,
     recursive: Boolean,
     children: (MusicDocument) -> List<MusicDocument>,

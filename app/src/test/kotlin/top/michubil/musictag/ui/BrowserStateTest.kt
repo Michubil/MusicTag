@@ -113,6 +113,33 @@ class BrowserStateTest {
     }
 
     @Test
+    fun albumLibraryIsNotEmptyUntilTheFirstIndexFinishes() {
+        val waiting = MainUiState(storageGranted = true, loading = false)
+        assertFalse(waiting.libraryReady)
+        assertTrue(waiting.albums.isEmpty())
+        assertFalse(waiting.libraryLoading)
+        val empty = waiting.copy(libraryReady = true)
+        assertTrue(empty.libraryReady)
+        assertTrue(empty.albums.isEmpty())
+        assertFalse(empty.libraryLoading)
+    }
+
+    @Test
+    fun cachedAlbumsAndSearchCannotEditBeforeValidationEvenIfTheRefreshFails() {
+        val cached = MainUiState(storageGranted = true, loading = false, libraryReady = true,
+            showingCachedLibrary = true, libraryLoading = true, selected = setOf("song"))
+        for (page in listOf(cached.copy(searching = true), cached.copy(openedAlbumKey = "album"))) {
+            assertFalse(page.canSelectFiles)
+            assertFalse(page.canEditSelection)
+            val failedRefresh = page.copy(libraryLoading = false)
+            assertFalse(failedRefresh.canEditSelection)
+            assertTrue(failedRefresh.canRefreshLibrary)
+            assertTrue(failedRefresh.copy(showingCachedLibrary = false).canEditSelection)
+        }
+        assertTrue(cached.canSelectFiles)
+    }
+
+    @Test
     fun searchCanSelectWhileDirectoryStillLoading() {
         val root = MusicDocument(savedTree, savedTree, null, "Music", isDirectory = true)
         val searching = MainUiState(storageGranted = true, loading = true, searching = true, root = root, selected = setOf("song"))
