@@ -19,25 +19,31 @@ class AppNavigationTest {
         listOf(Routes.Folder, Routes.Search, Routes.Options, Routes.Candidates, Routes.Rename, Routes.Editor).forEach {
             assertEquals(TabDecision.PopToRoot, tabDecision(it, Routes.Files))
         }
+        assertEquals(TabDecision.PopToRoot, tabDecision(Routes.About, Routes.Settings))
     }
 
     @Test
     fun switchingFromChildrenDiscardsTheirStack() {
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Candidates, Routes.Settings))
         assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.Settings, Routes.Files))
+        assertEquals(TabDecision.SwitchRoot, tabDecision(Routes.About, Routes.Files))
     }
 
     @Test
     fun rootTransitionsKeepReferenceDirection() {
         assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Options, Routes.Settings))
+        assertEquals(AppPageMotion.TabForward, resolvePageMotion(Routes.Files, Routes.About))
         assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.Settings, Routes.Files, true))
+        assertEquals(AppPageMotion.TabBackward, resolvePageMotion(Routes.About, Routes.Files))
     }
 
     @Test
     fun secondaryTransitionsUseOpenAndCloseMotion() {
         assertEquals(AppPageMotion.Open, resolvePageMotion(Routes.Folder, Routes.Options))
+        assertEquals(AppPageMotion.Open, resolvePageMotion(Routes.Settings, Routes.About))
         assertEquals(AppPageMotion.Close, resolvePageMotion(Routes.Candidates, Routes.Options, true))
         assertEquals(AppPageMotion.Close, resolvePageMotion(Routes.Folder, Routes.Folder, true))
+        assertEquals(AppPageMotion.Close, resolvePageMotion(Routes.About, Routes.Settings, true))
     }
 
     @Test
@@ -47,6 +53,7 @@ class AppNavigationTest {
         assertEquals(root, browserDirectoryUri(Routes.Files, root, child))
         assertEquals(child, browserDirectoryUri(Routes.Folder, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Settings, root, child))
+        assertEquals(null, browserDirectoryUri(Routes.About, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Search, root, child))
         assertEquals(null, browserDirectoryUri(Routes.Files, null, child))
     }
@@ -59,6 +66,7 @@ class AppNavigationTest {
         assertFalse(shouldLeaveSearch(Routes.Editor))
         assertTrue(shouldLeaveSearch(Routes.Files))
         assertTrue(shouldLeaveSearch(Routes.Settings))
+        assertTrue(shouldLeaveSearch(Routes.About))
         assertFalse(shouldReturnToBrowser(Routes.Search, MainUiState()))
     }
 
@@ -72,6 +80,7 @@ class AppNavigationTest {
         assertFalse(shouldReturnToBrowser(Routes.Files, restored))
         assertFalse(shouldReturnToBrowser(Routes.Folder, restored))
         assertFalse(shouldReturnToBrowser(Routes.Settings, restored))
+        assertFalse(shouldReturnToBrowser(Routes.About, restored))
     }
 
     @Test

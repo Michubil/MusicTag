@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import dev.androidgui.core.designsystem.component.*
 import dev.androidgui.core.designsystem.icon.AppIcons
 import top.michubil.musictag.BuildConfig
+import top.michubil.musictag.R
 import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
@@ -314,14 +315,66 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
         }
         item {
             PreferenceGroup(title = "关于") {
-                item { SettingInfoRow("Music Tag", "版本 ${BuildConfig.VERSION_NAME}", AppIcons.About) }
+                item {
+                    SettingChoiceRow(
+                        title = "Music Tag",
+                        value = "版本 ${BuildConfig.VERSION_NAME}",
+                        icon = AppIcons.About,
+                        onClick = { onAction(MainAction.ShowAbout) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, onAction: (MainAction) -> Unit) {
+fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+    AppContentList {
+        item {
+            AppIdentityHeader(
+                icon = R.drawable.ic_app,
+                name = "Music Tag",
+                summary = "本地音乐标签工具",
+                version = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                actionLabel = if (state.checkingUpdate) "正在检查更新" else "检查更新",
+                actionEnabled = !state.checkingUpdate,
+                onAction = { onAction(MainAction.CheckUpdates) },
+            )
+        }
+        item {
+            PreferenceGroup(title = "开源相关") {
+                item {
+                    SettingChoiceRow(
+                        title = "源代码",
+                        value = "GitHub",
+                        icon = AppIcons.About,
+                        onClick = { onAction(MainAction.OpenSourceRepository) },
+                    )
+                }
+                item {
+                    SettingChoiceRow(
+                        title = "许可证",
+                        value = "Apache 2.0",
+                        icon = AppIcons.About,
+                        onClick = { onAction(MainAction.OpenLicense) },
+                    )
+                }
+                item {
+                    SettingChoiceRow(
+                        title = "第三方声明",
+                        value = "依赖与参考实现",
+                        icon = AppIcons.About,
+                        onClick = { onAction(MainAction.OpenNotices) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, onAction: (MainAction) -> Unit) {
     MetadataGroup.entries.forEach { group ->
         AppSingleChoiceDialog(
             visible = state.sourceDialog == group && settingsVisible,
@@ -375,6 +428,13 @@ fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Bo
         onDismissRequest = { onAction(MainAction.DismissSortDialog) },
         toggle = AppDialogToggle("倒序", state.sortDescendingDraft) { onAction(MainAction.SetSortDescendingDraft(it)) },
         actions = AppDialogActions("确定", "取消") { onAction(MainAction.ApplySort) },
+    )
+    AppConfirmDialog(
+        visible = state.availableUpdate != null && aboutVisible,
+        title = "发现新版本",
+        message = state.availableUpdate?.let { "${it.versionName} 可下载，是否更新？" }.orEmpty(),
+        actions = AppDialogActions("下载", "取消") { onAction(MainAction.ConfirmUpdateDownload) },
+        onDismissRequest = { onAction(MainAction.DismissUpdateDownload) },
     )
 }
 

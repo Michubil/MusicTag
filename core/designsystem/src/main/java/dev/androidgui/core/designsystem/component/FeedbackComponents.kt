@@ -1,5 +1,7 @@
 package dev.androidgui.core.designsystem.component
 
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,6 +24,8 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import dev.androidgui.core.designsystem.icon.AppIcon
 import dev.androidgui.core.designsystem.icon.AppIconView
@@ -131,6 +135,51 @@ fun AppProgress(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+    }
+}
+
+/** Untinted app mark with name, summary, version and an optional page action. */
+@Composable
+fun AppIdentityHeader(
+    @DrawableRes icon: Int,
+    name: String,
+    summary: String,
+    version: String,
+    actionLabel: String? = null,
+    actionEnabled: Boolean = true,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(AppSpacing.ExtraLarge),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.Medium),
+    ) {
+        Image(
+            painter = painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.size(AppDimensions.IdentityIconSize),
+            contentScale = ContentScale.Fit,
+        )
+        Text(
+            text = name,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleLarge,
+        )
+        Text(
+            text = summary,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = version,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (actionLabel != null && onAction != null) {
+            AppButton(text = actionLabel, onClick = onAction, modifier = Modifier.fillMaxWidth(), enabled = actionEnabled)
         }
     }
 }

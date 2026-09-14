@@ -155,6 +155,37 @@ fun <T> AppSingleChoiceDialog(
 }
 
 @Composable
+fun AppConfirmDialog(
+    visible: Boolean,
+    title: String,
+    message: String,
+    actions: AppDialogActions,
+    onDismissRequest: () -> Unit,
+) {
+    AppModalSurface(visible, title, onDismissRequest) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(AppSpacing.ExtraLarge),
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = AppSpacing.ExtraLarge).padding(bottom = AppSpacing.Large),
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(AppSpacing.Large),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDismissRequest, enabled = visible) { Text(actions.dismissLabel) }
+            TextButton(onClick = actions.onConfirm, enabled = visible) { Text(actions.confirmLabel) }
+        }
+    }
+}
+
+@Composable
 internal fun AppModalSurface(
     visible: Boolean,
     title: String,

@@ -12,10 +12,18 @@ import java.net.HttpURLConnection
 import java.net.URI
 
 internal object MusicHttp {
+    class StatusException(val code: Int, label: String) : IllegalStateException("$label 请求失败：HTTP $code")
+
     suspend fun json(url: String, referer: String, label: String, body: ByteArray? = null,
         contentType: String = "application/json"): JSONObject = JSONObject(
         request(URI(url), referer, label, 4 * 1024 * 1024, body, contentType).toString(Charsets.UTF_8),
     )
+
+    suspend fun getJson(url: String, label: String, extraHeaders: Map<String, String> = emptyMap()): JSONObject {
+        val uri = URI(url)
+        require(uri.scheme == "https" && uri.userInfo == null)
+        return JSONObject(request(uri, referer = null, label, 4 * 1024 * 1024, extraHeaders = extraHeaders).toString(Charsets.UTF_8))
+    }
 
     suspend fun cover(rawUrl: String, referer: String, trustedHost: (String) -> Boolean): CoverImage {
         val uri = URI(rawUrl.replaceFirst("http://", "https://"))
@@ -25,8 +33,15 @@ internal object MusicHttp {
         return CoverImages.read(request(uri, referer, "封面下载", CoverImages.MAX_BYTES))
     }
 
-    private suspend fun request(uri: URI, referer: String, label: String, limit: Int,
-        body: ByteArray? = null, contentType: String = "application/json"): ByteArray = withContext(Dispatchers.IO) {
+    private suspend fun request(
+        uri: URI,
+        referer: String?,
+        label: String,
+        limit: Int,
+        body: ByteArray? = null,
+        contentType: String = "application/json",
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): ByteArray = withContext(Dispatchers.IO) {
         currentCoroutineContext().ensureActive()
         require(uri.scheme == "https")
         val connection = (uri.toURL().openConnection() as HttpURLConnection).apply {
@@ -34,8 +49,9 @@ internal object MusicHttp {
             instanceFollowRedirects = false
             connectTimeout = 10_000
             readTimeout = 15_000
-            setRequestProperty("Referer", referer)
+            extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 17) MusicTag/${top.michubil.musictag.BuildConfig.VERSION_NAME}")
+            if (referer != null) setRequestProperty("Referer", referer)
             if (body != null) {
                 doOutput = true
                 setFixedLengthStreamingMode(body.size)
@@ -44,7 +60,8 @@ internal object MusicHttp {
         }
         try {
             if (body != null) connection.outputStream.use { it.write(body) }
-            check(connection.responseCode in 200..299) { "$label 请求失败：HTTP ${connection.responseCode}" }
+            val code = connection.responseCode
+            if (code !in 200..299) throw StatusException(code, label)
             require(connection.contentLengthLong <= limit) { "$label 响应内容过大" }
             connection.inputStream.use { input ->
                 val output = ByteArrayOutputStream(minOf(limit, 64 * 1024))

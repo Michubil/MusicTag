@@ -33,6 +33,8 @@ import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.SearchEntry
 import top.michubil.musictag.data.UserPreferences
 import top.michubil.musictag.data.filterSearch
+import top.michubil.musictag.BuildConfig
+import top.michubil.musictag.data.AppUpdate
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as MusicTagApplication).container
@@ -60,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val searchQueries = MutableStateFlow("")
     private var candidateJob: Job? = null
     private var authorizationJob: Job? = null
+    private var updateJob: Job? = null
     private var renameReadJob: Job? = null
     private var renameInputs: RenameInputs? = null
     private val tagEditor = TagEditorSession(
@@ -293,6 +296,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (snapshot.items.any { it === action.item } || snapshot.searchItems.any { it === action.item }) {
                     action.item.releaseArtwork()
                 }
+            }
+            MainAction.ShowAbout -> effectChannel.trySend(MainEffect.OpenAbout)
+            MainAction.CheckUpdates -> checkUpdates()
+            MainAction.ConfirmUpdateDownload -> {
+                val update = mutableState.value.availableUpdate ?: return
+                mutableState.update { it.copy(availableUpdate = null) }
+                effectChannel.trySend(MainEffect.OpenUrl(update.downloadUrl))
+            }
+            MainAction.DismissUpdateDownload -> mutableState.update { it.copy(availableUpdate = null) }
+            MainAction.OpenSourceRepository -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Repository))
+            MainAction.OpenLicense -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.License))
+            MainAction.OpenNotices -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Notices))
+            is MainAction.ShowMessage -> mutableState.update { it.copy(message = action.message) }
+        }
+    }
+
+    private fun checkUpdates() {
+        if (updateJob?.isActive == true) return
+        mutableState.update { it.copy(checkingUpdate = true, availableUpdate = null) }
+        updateJob = viewModelScope.launch {
+            try {
+                val update = AppUpdate.newerRelease(BuildConfig.VERSION_NAME)
+                if (update == null) {
+                    mutableState.update { it.copy(checkingUpdate = false, message = "已是最新版本") }
+                } else {
+                    mutableState.update { it.copy(checkingUpdate = false, availableUpdate = update) }
+                }
+            } catch (error: CancellationException) {
+                mutableState.update { it.copy(checkingUpdate = false) }
+                throw error
+            } catch (error: Exception) {
+                mutableState.update { it.copy(checkingUpdate = false, message = error.userMessage()) }
             }
         }
     }

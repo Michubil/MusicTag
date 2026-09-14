@@ -27,12 +27,13 @@ internal object Routes {
     const val Editor = "files/editor"
     const val Candidates = "files/candidates"
     const val Settings = "settings"
+    const val About = "settings/about"
 }
 
-internal fun rootRoute(route: String?) = if (route == Routes.Settings) Routes.Settings else Routes.Files
+internal fun rootRoute(route: String?) = if (route == Routes.Settings || route == Routes.About) Routes.Settings else Routes.Files
 internal fun isDirectoryRoute(route: String?) = route == Routes.Files || route == Routes.Folder
 internal fun isBrowserRoute(route: String?) = isDirectoryRoute(route) || route == Routes.Search
-internal fun shouldLeaveSearch(route: String?) = isDirectoryRoute(route) || route == Routes.Settings
+internal fun shouldLeaveSearch(route: String?) = isDirectoryRoute(route) || rootRoute(route) == Routes.Settings
 internal enum class TabDecision { Stay, PopToRoot, SwitchRoot }
 
 internal fun browserDirectoryUri(route: String?, rootUri: String?, folderUri: String?): String? = when (route) {
@@ -67,7 +68,12 @@ internal fun resolvePageMotion(from: String?, to: String?, isPop: Boolean = fals
 }
 
 @Composable
-fun MusicTagApp(model: MainViewModel, onChooseStorageTree: () -> Unit, onChooseTagCover: () -> Unit) {
+fun MusicTagApp(
+    model: MainViewModel,
+    onChooseStorageTree: () -> Unit,
+    onChooseTagCover: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
     val state by model.state.collectAsStateWithLifecycle()
     val dark = when (state.themeMode) {
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -82,7 +88,7 @@ fun MusicTagApp(model: MainViewModel, onChooseStorageTree: () -> Unit, onChooseT
                 model.onAction(MainAction.ConsumeMessage)
             }
         }
-        key(state.treeUri) { AppNavigation(state, model, snackbar, onChooseStorageTree, onChooseTagCover) }
+        key(state.treeUri) { AppNavigation(state, model, snackbar, onChooseStorageTree, onChooseTagCover, onOpenUrl) }
     }
 }
 
@@ -93,6 +99,7 @@ private fun AppNavigation(
     snackbar: AppSnackbarState,
     onChooseStorageTree: () -> Unit,
     onChooseTagCover: () -> Unit,
+    onOpenUrl: (String) -> Unit,
 ) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
@@ -102,16 +109,20 @@ private fun AppNavigation(
     var pendingTab by remember { mutableStateOf<Int?>(null) }
     val latestDirectoryPicker by rememberUpdatedState(onChooseStorageTree)
     val latestCoverPicker by rememberUpdatedState(onChooseTagCover)
+    val latestUrlOpener by rememberUpdatedState(onOpenUrl)
     val browserVisible = isBrowserRoute(route)
     val searchVisible = route == Routes.Search
     val showFileActions = browserVisible && state.canEditSelection
     val settingsVisible = route == Routes.Settings
+    val aboutVisible = route == Routes.About
+    val settingsTab = rootRoute(route) == Routes.Settings
     val appName = stringResource(R.string.app_name)
     val title = when (route) {
         Routes.Options -> "选择刮削内容"
         Routes.Rename -> "文件名修改"
         Routes.Editor -> "编辑标签"
         Routes.Candidates -> "选择匹配歌曲"
+        Routes.About -> "关于"
         else -> appName
     }
     LaunchedEffect(showFileActions) {
@@ -171,6 +182,8 @@ private fun AppNavigation(
                     nav.popBackStack(if (current == Routes.Editor) Routes.Editor else if (current == Routes.Rename) Routes.Rename else Routes.Options, inclusive = true)
                 }
                 MainEffect.ChooseStorageTree -> latestDirectoryPicker()
+                MainEffect.OpenAbout -> if (current == Routes.Settings) nav.navigate(Routes.About) { launchSingleTop = true }
+                is MainEffect.OpenUrl -> latestUrlOpener(effect.url)
                 MainEffect.ResetBrowserRoot -> nav.navigate(Routes.Files) {
                     popUpTo(Routes.Files) { inclusive = false }
                     launchSingleTop = true
@@ -189,7 +202,7 @@ private fun AppNavigation(
     AppScaffold(
         screenKey = entry?.id,
         modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog || state.mp3TagVersionDialog || state.sourceDialog != null) && settingsVisible) || (state.sortDialog && browserVisible) ||
-            (state.editMenuExpanded && showFileActions),
+            (state.availableUpdate != null && aboutVisible) || (state.editMenuExpanded && showFileActions),
         topBar = {
             AppTopBar(
                 title = title,
@@ -220,7 +233,7 @@ private fun AppNavigation(
                     AppNavigationDestination("文件", AppIcons.Music),
                     AppNavigationDestination("设置", AppIcons.Settings),
                 ),
-                selectedIndex = if (settingsVisible) 1 else 0,
+                selectedIndex = if (settingsTab) 1 else 0,
                 onDestinationSelected = { pendingTab = it },
             )
         },
@@ -262,9 +275,10 @@ private fun AppNavigation(
             composable(Routes.Editor) { TagEditorPage(state.editor, state.busy, model::onAction) }
             composable(Routes.Candidates) { CandidatesPage(state, model::onAction) }
             composable(Routes.Settings) { SettingsPage(state, model::onAction) }
+            composable(Routes.About) { AboutPage(state, model::onAction) }
         }
     }
-    MainDialogs(state, settingsVisible, browserVisible, model::onAction)
+    MainDialogs(state, settingsVisible, browserVisible, aboutVisible, model::onAction)
 }
 
 /** Freeze an outgoing folder while its exit/predictive-back transition is still on screen. */

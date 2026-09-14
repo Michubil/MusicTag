@@ -28,12 +28,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MusicTagApp(model, ::chooseStorageTree) { coverPicker.launch(arrayOf("image/jpeg", "image/png")) } }
+        setContent {
+            MusicTagApp(
+                model,
+                onChooseStorageTree = ::chooseStorageTree,
+                onChooseTagCover = { coverPicker.launch(arrayOf("image/jpeg", "image/png")) },
+                onOpenUrl = ::openUrl,
+            )
+        }
     }
 
     override fun onResume() {
         super.onResume()
         model.onAction(MainAction.Refresh)
+    }
+
+    private fun openUrl(url: String) {
+        val opened = runCatching { startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) }.isSuccess
+        if (!opened) model.onAction(MainAction.ShowMessage("无法打开链接"))
     }
 
     private fun chooseStorageTree() {

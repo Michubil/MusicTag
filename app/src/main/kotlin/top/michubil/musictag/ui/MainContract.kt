@@ -15,6 +15,7 @@ import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
 import top.michubil.musictag.data.rename.RenameEntry
 import top.michubil.musictag.data.rename.RenamePreset
+import top.michubil.musictag.data.AppRelease
 
 data class MainUiState(
     val treeUri: String? = null,
@@ -70,6 +71,8 @@ data class MainUiState(
     val searchLoading: Boolean = false,
     val searchRefreshing: Boolean = false,
     val searchProgress: ScanProgress? = null,
+    val checkingUpdate: Boolean = false,
+    val availableUpdate: AppRelease? = null,
 ) {
     val showStoragePicker: Boolean get() = !loading && !storageGranted
     val canRefresh: Boolean get() = storageGranted && !loading && !busy
@@ -165,6 +168,14 @@ sealed interface MainAction {
     data class StorageTreeSelected(val uri: String, val grantFlags: Int) : MainAction
     data class LoadFilePreview(val item: FileItem) : MainAction
     data class ReleaseArtwork(val item: FileItem) : MainAction
+    data object ShowAbout : MainAction
+    data object CheckUpdates : MainAction
+    data object ConfirmUpdateDownload : MainAction
+    data object DismissUpdateDownload : MainAction
+    data object OpenSourceRepository : MainAction
+    data object OpenLicense : MainAction
+    data object OpenNotices : MainAction
+    data class ShowMessage(val message: String) : MainAction
 }
 
 sealed interface MainEffect {
@@ -179,4 +190,12 @@ sealed interface MainEffect {
     data object ReturnToBrowser : MainEffect
     data object ResetBrowserRoot : MainEffect
     data object ChooseStorageTree : MainEffect
+    data object OpenAbout : MainEffect
+    data class OpenUrl(val url: String) : MainEffect
+}
+
+internal object AboutLinks {
+    const val Repository = "https://github.com/Michubil/MusicTag"
+    const val License = "$Repository/blob/main/LICENSE"
+    const val Notices = "$Repository/blob/main/THIRD_PARTY_NOTICES.md"
 }

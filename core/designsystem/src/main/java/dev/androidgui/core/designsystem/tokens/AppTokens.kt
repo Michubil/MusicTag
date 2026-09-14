@@ -28,6 +28,7 @@ object AppDimensions {
     val SwitchWidth = 52.dp
     val SwitchHeight = 32.dp
     val StateIconSize = 52.dp
+    val IdentityIconSize = 80.dp
     val ArtworkSize = 48.dp
     val FloatingActionSize = 56.dp
 }

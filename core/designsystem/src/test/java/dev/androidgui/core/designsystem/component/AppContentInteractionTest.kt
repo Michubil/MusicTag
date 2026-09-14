@@ -40,6 +40,7 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindowProvider
+import dev.androidgui.core.designsystem.R
 import dev.androidgui.core.designsystem.icon.AppIcons
 import dev.androidgui.core.designsystem.theme.AppTheme
 import org.junit.Assert.assertEquals
@@ -294,6 +295,52 @@ class AppContentInteractionTest {
         compose.onNodeWithText("Confirm").performClick()
         compose.onNodeWithText("Sort").assertDoesNotExist()
         assertEquals(1, commits)
+    }
+
+    @Test
+    fun confirmDialogDownloadCommitsOnceAndCancelDoesNot() {
+        val visible = mutableStateOf(true)
+        var downloads = 0
+        compose.setContent {
+            AppTheme(false, false) {
+                AppConfirmDialog(
+                    visible = visible.value,
+                    title = "发现新版本",
+                    message = "1.0.1 可下载，是否更新？",
+                    actions = AppDialogActions("下载", "取消") { downloads++; visible.value = false },
+                    onDismissRequest = { visible.value = false },
+                )
+            }
+        }
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithText("发现新版本").assertDoesNotExist()
+        assertEquals(0, downloads)
+        compose.runOnIdle { visible.value = true }
+        compose.onNodeWithText("下载").performClick()
+        compose.onNodeWithText("发现新版本").assertDoesNotExist()
+        assertEquals(1, downloads)
+    }
+
+    @Test
+    fun identityHeaderShowsNameSummaryVersionAndAction() {
+        var clicks = 0
+        compose.setContent {
+            AppTheme(false, false) {
+                AppIdentityHeader(
+                    icon = R.drawable.ic_about,
+                    name = "Music Tag",
+                    summary = "本地音乐标签工具",
+                    version = "1.0.0 (20)",
+                    actionLabel = "检查更新",
+                    onAction = { clicks++ },
+                )
+            }
+        }
+        compose.onNodeWithText("Music Tag").assertIsDisplayed()
+        compose.onNodeWithText("本地音乐标签工具").assertIsDisplayed()
+        compose.onNodeWithText("1.0.0 (20)").assertIsDisplayed()
+        compose.onNodeWithText("检查更新").performClick()
+        assertEquals(1, clicks)
     }
 
     @Test
