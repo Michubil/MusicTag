@@ -141,6 +141,15 @@ class MusicSourceClientsTest {
         }
     }
 
+    @Test
+    fun qqSearchKeepsEveryDistinctCandidateAndFetchesItsOwnDetails() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ, smartboxIds = listOf(2, 1, 2))
+        val songs = QqMusicClient(transport).search("Song")
+        assertEquals(listOf(2L, 1L), songs.map { it.id })
+        assertTrue(songs.all { it.source == MusicSource.QQ && it.durationMs == 180000L })
+        assertEquals(3, transport.jsonRequests.size)
+    }
+
     private fun client(source: MusicSource, transport: MusicTransport): MusicSourceClient = when (source) {
         MusicSource.NETEASE -> NetEaseClient(transport)
         MusicSource.QQ -> QqMusicClient(transport)
@@ -160,7 +169,8 @@ class MusicSourceClientsTest {
         val detailFailure: Throwable? = null,
         val lyricFailure: Throwable? = null,
         val coverFailure: Throwable? = null,
-        val detailId: Long = 1,
+        val detailId: Long? = null,
+        val smartboxIds: List<Long> = listOf(1, 1),
         val detailTitle: Any = "Song",
         val lyricCode: Any = if (source == MusicSource.NETEASE) 200 else 0,
         val lyricText: String = "[00:01.000]Hello",
@@ -176,7 +186,9 @@ class MusicSourceClientsTest {
                 return JSONObject("""{"code":200,"result":{"songs":[{"id":1,"name":" Song ","dt":180000}]}}""")
             }
             if ("smartbox" in url) {
-                return JSONObject("""{"code":0,"data":{"song":{"itemlist":[{"id":"1"},{"id":"1"}]}}}""")
+                val items = org.json.JSONArray()
+                smartboxIds.forEach { items.put(JSONObject().put("id", it.toString())) }
+                return JSONObject().put("code", 0).put("data", JSONObject().put("song", JSONObject().put("itemlist", items)))
             }
             if ("lyric" in url) {
                 lyricFailure?.let { throw it }
@@ -191,7 +203,11 @@ class MusicSourceClientsTest {
                 "Unexpected request: $url"
             }
             detailFailure?.let { throw it }
-            val song = JSONObject().put("id", detailId).put("name", detailTitle)
+            val requestedId = if (source == MusicSource.QQ) {
+                JSONObject(requireNotNull(body).toString(Charsets.UTF_8))
+                    .getJSONObject("music.pf_song_detail_svr").getJSONObject("param").getLong("song_id")
+            } else 1L
+            val song = JSONObject().put("id", detailId ?: requestedId).put("name", detailTitle)
                 .put("title", detailTitle).put("dt", 180000).put("interval", 180)
             return if (source == MusicSource.NETEASE) {
                 JSONObject().put("code", 200).put("songs", org.json.JSONArray().put(song))
