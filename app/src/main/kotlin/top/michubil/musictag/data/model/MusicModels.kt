@@ -61,8 +61,8 @@ enum class Mp3TagVersion(val major: Int, val label: String) {
 enum class MusicSource(val label: String) { NETEASE("网易云音乐"), QQ("QQ 音乐") }
 
 enum class SourceOrder(val label: String, val sources: List<MusicSource>) {
-    NETEASE_FIRST("网易云 → QQ 音乐", listOf(MusicSource.NETEASE, MusicSource.QQ)),
-    QQ_FIRST("QQ 音乐 → 网易云", listOf(MusicSource.QQ, MusicSource.NETEASE)),
+    NETEASE_FIRST("双源搜索，网易云优先", listOf(MusicSource.NETEASE, MusicSource.QQ)),
+    QQ_FIRST("双源搜索，QQ 音乐优先", listOf(MusicSource.QQ, MusicSource.NETEASE)),
     NETEASE_ONLY("仅网易云音乐", listOf(MusicSource.NETEASE)),
     QQ_ONLY("仅 QQ 音乐", listOf(MusicSource.QQ)),
 }

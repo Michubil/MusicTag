@@ -1,5 +1,8 @@
 package top.michubil.musictag.data.network
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import top.michubil.musictag.data.match.SongMatcher
 import top.michubil.musictag.data.match.sameRecording
 import top.michubil.musictag.data.model.*
@@ -12,19 +15,25 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
     }
 
     suspend fun candidates(track: LocalTrack, options: ScrapeOptions): List<MatchResult> {
-        val result = mutableListOf<MatchResult>()
-        var failure: Throwable? = null
-        for (source in options.sources[searchGroup(options)].sources) {
-            val found = sourceResult { clients.getValue(source).search(SongMatcher.query(track)) }
-            failure = found.exceptionOrNull() ?: failure
-            val songs = found.getOrNull().orEmpty()
-            val ranked = SongMatcher.rank(track, songs)
-            result += ranked
-            if (SongMatcher.automaticFromRanked(ranked) != null) break
-        }
-        if (result.isEmpty() && failure != null) throw failure
-        return result.distinctBy { it.candidate.key }
+        val responses = searchSources(track, options.sources[searchGroup(options)].sources)
+        val songs = responses.values.flatMap { it.getOrNull().orEmpty() }.distinctBy { it.key }
+        if (songs.isEmpty()) responses.values.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+        return SongMatcher.rank(track, songs)
     }
+
+    private suspend fun searchSources(
+        track: LocalTrack,
+        sources: List<MusicSource>,
+    ): Map<MusicSource, Result<List<SongCandidate>>> = coroutineScope {
+        val query = SongMatcher.query(track)
+        sources.distinct().map { source ->
+            async { source to sourceResult { clients.getValue(source).search(query) } }
+        }.awaitAll().toMap()
+    }
+
+    private fun referenceTrack(track: LocalTrack, candidate: SongCandidate?): LocalTrack =
+        candidate?.let { LocalTrack(track.fileName, it.title, it.artists,
+            it.album.takeIf(String::isNotBlank), it.durationMs) } ?: track
 
     suspend fun metadata(track: LocalTrack, options: ScrapeOptions, forced: SongCandidate?): ScrapedMetadata {
         val selected = options.policies.filterValues { it.enabled }.keys
@@ -38,6 +47,14 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         fun order(group: MetadataGroup): List<MusicSource> =
             orderedSources(group, options.sources, forced, searchGroup(options))
 
+        val sources = MetadataGroup.entries.flatMap { group ->
+            val fields = group.fields.intersect(selected)
+            if (fields.isEmpty()) emptyList() else order(group).filter { source ->
+                source !in matches && fields.any { it in clients.getValue(source).supportedFields }
+            }
+        }
+        val searches = searchSources(referenceTrack(track, forced), sources)
+
         suspend fun fetch(source: MusicSource, required: Set<MetadataField>): ScrapedMetadata {
             val fields = metadataRequestFields(source, required, selected, attempted, downloaded) { order(it) }
             if (fields.isEmpty()) return downloaded[source] ?: ScrapedMetadata()
@@ -45,9 +62,8 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             val response = sourceResult {
                 if (supported.isNotEmpty() && source !in matches) {
                     val referenceSong = anchor
-                    val reference = referenceSong?.let { LocalTrack(track.fileName, it.title, it.artists,
-                        it.album.takeIf(String::isNotBlank), it.durationMs) } ?: track
-                    val candidates = clients.getValue(source).search(SongMatcher.query(reference))
+                    val reference = referenceTrack(track, referenceSong)
+                    val candidates = searches.getValue(source).getOrThrow()
                     val compatible = if (referenceSong == null) candidates else candidates.filter { sameRecording(referenceSong, it) }
                     matches[source] = SongMatcher.automatic(reference, compatible)?.candidate
                 }
