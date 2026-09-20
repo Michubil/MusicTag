@@ -11,11 +11,17 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 
-internal object MusicHttp {
+internal interface MusicTransport {
+    suspend fun json(url: String, referer: String, label: String, body: ByteArray? = null,
+        contentType: String = "application/json"): JSONObject
+    suspend fun cover(rawUrl: String, referer: String, trustedHost: (String) -> Boolean): CoverImage
+}
+
+internal object MusicHttp : MusicTransport {
     class StatusException(val code: Int, label: String) : IllegalStateException("$label 请求失败：HTTP $code")
 
-    suspend fun json(url: String, referer: String, label: String, body: ByteArray? = null,
-        contentType: String = "application/json"): JSONObject = JSONObject(
+    override suspend fun json(url: String, referer: String, label: String, body: ByteArray?,
+        contentType: String): JSONObject = JSONObject(
         request(URI(url), referer, label, 4 * 1024 * 1024, body, contentType).toString(Charsets.UTF_8),
     )
 
@@ -25,7 +31,7 @@ internal object MusicHttp {
         return JSONObject(request(uri, referer = null, label, 4 * 1024 * 1024, extraHeaders = extraHeaders).toString(Charsets.UTF_8))
     }
 
-    suspend fun cover(rawUrl: String, referer: String, trustedHost: (String) -> Boolean): CoverImage {
+    override suspend fun cover(rawUrl: String, referer: String, trustedHost: (String) -> Boolean): CoverImage {
         val uri = URI(rawUrl.replaceFirst("http://", "https://"))
         require(uri.scheme == "https" && uri.userInfo == null && trustedHost(uri.host.orEmpty().lowercase())) {
             "封面来源不受信任"

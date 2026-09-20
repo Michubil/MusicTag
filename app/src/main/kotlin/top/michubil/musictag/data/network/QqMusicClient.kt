@@ -5,7 +5,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
-import org.json.JSONArray
 import org.json.JSONObject
 import top.michubil.musictag.data.lyrics.LyricsCodec
 import top.michubil.musictag.data.model.*
@@ -16,7 +15,9 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
 /** Anonymous web requests. */
-class QqMusicClient : MusicSourceClient {
+class QqMusicClient internal constructor(private val transport: MusicTransport) : MusicSourceClient {
+    constructor() : this(MusicHttp)
+
     override val source = MusicSource.QQ
     override val supportedFields = MetadataField.entries.toSet() - MetadataField.DISC
     private val connections = Semaphore(2)
@@ -27,16 +28,16 @@ class QqMusicClient : MusicSourceClient {
     override suspend fun search(query: String): List<SongCandidate> {
         val keyword = URLEncoder.encode(query, StandardCharsets.UTF_8)
         val root = limited {
-            MusicHttp.json("https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?format=json&key=$keyword",
+            transport.json("https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?format=json&key=$keyword",
                 REFERER, source.label)
         }
-        check(root.has("code") && root.optInt("code", -1) == 0 && root.optInt("subcode", 0) == 0) {
+        check(root.long("code") == 0L && (!root.has("subcode") || root.long("subcode") == 0L)) {
             "QQ 音乐搜索接口暂不可用"
         }
         val songs = root.optJSONObject("data")?.optJSONObject("song")?.optJSONArray("itemlist")
             ?: error("QQ 音乐搜索响应结构无效")
         val ids = List(songs.length()) { index ->
-            songs.optJSONObject(index)?.number("id")?.takeIf { it > 0 }
+            songs.optJSONObject(index)?.long("id")?.takeIf { it > 0 }
                 ?: error("QQ 音乐歌曲标识无效")
         }.distinct()
         // Quick search lacks album and duration. Enrich every candidate before ranking;
@@ -48,6 +49,7 @@ class QqMusicClient : MusicSourceClient {
 
     override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
         require(candidate.source == source && candidate.id > 0)
+        if (fields.isEmpty()) return ScrapedMetadata()
         val needsDetail = fields.any { it in MetadataGroup.TAGS.fields } ||
             (MetadataField.COVER in fields && candidate.coverUrl == null) ||
             (MetadataField.LYRICS in fields && candidate.mid == null)
@@ -71,7 +73,7 @@ class QqMusicClient : MusicSourceClient {
             val url = base?.coverUrl ?: candidate.coverUrl
             if (url == null) RemoteValue.Unavailable else sourceResult {
                 // Keep album artwork; a missing album cover must not turn into a singer portrait.
-                RemoteValue.Available(limited { MusicHttp.cover(url, REFERER) { it == "y.gtimg.cn" } })
+                RemoteValue.Available(limited { transport.cover(url, REFERER) { it == "y.gtimg.cn" } })
             }.getOrElse { RemoteValue.Unavailable }
         } else RemoteValue.Unavailable
         return ScrapedMetadata(
@@ -90,7 +92,7 @@ class QqMusicClient : MusicSourceClient {
     private suspend fun fetchSongDetail(id: Long): JSONObject {
         val data = cgi("music.pf_song_detail_svr", "get_song_detail_yqq", JSONObject().put("song_id", id))
         val song = data.optJSONObject("track_info") ?: error("QQ 音乐歌曲详情结构无效")
-        check(song.number("id") == id) { "QQ 音乐返回了不一致的歌曲详情" }
+        check(song.long("id") == id) { "QQ 音乐返回了不一致的歌曲详情" }
         return song
     }
 
@@ -100,8 +102,8 @@ class QqMusicClient : MusicSourceClient {
             "loginUin" to "0", "hostUin" to "0", "inCharset" to "utf8", "outCharset" to "utf-8",
             "notice" to "0", "platform" to "yqq", "needNewCode" to "0")
             .entries.joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, StandardCharsets.UTF_8)}" }
-        val root = limited { MusicHttp.json("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?$query", REFERER, source.label) }
-        check(root.has("code") && root.optInt("code", -1) == 0 && root.optInt("retcode", 0) == 0) {
+        val root = limited { transport.json("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?$query", REFERER, source.label) }
+        check(root.long("code") == 0L && (!root.has("retcode") || root.long("retcode") == 0L)) {
             "QQ 音乐歌词接口暂不可用"
         }
         check(root.has("lyric") && !root.isNull("lyric")) { "QQ 音乐未返回歌词内容" }
@@ -124,11 +126,11 @@ class QqMusicClient : MusicSourceClient {
         val payload = JSONObject().put(module, JSONObject().put("module", module).put("method", method).put("param", params))
             .put("comm", JSONObject().put("ct", 24).put("cv", 0).put("uin", 0)
                 .put("format", "json").put("g_tk", 5381).put("platform", "yqq.json"))
-        val root = limited { MusicHttp.json("https://u.y.qq.com/cgi-bin/musicu.fcg", REFERER, source.label,
+        val root = limited { transport.json("https://u.y.qq.com/cgi-bin/musicu.fcg", REFERER, source.label,
             payload.toString().toByteArray(Charsets.UTF_8)) }
-        check(root.optInt("code", 0) == 0) { "QQ 音乐接口暂不可用" }
+        check(!root.has("code") || root.long("code") == 0L) { "QQ 音乐接口暂不可用" }
         val response = root.optJSONObject(module) ?: error("QQ 音乐接口响应结构无效")
-        check(response.has("code") && response.optInt("code", -1) == 0) { "QQ 音乐接口暂不可用，请稍后重试" }
+        check(response.long("code") == 0L) { "QQ 音乐接口暂不可用，请稍后重试" }
         return response.optJSONObject("data") ?: error("QQ 音乐没有返回数据")
     }
 
@@ -142,7 +144,7 @@ class QqMusicClient : MusicSourceClient {
     }
 
     private fun candidateFromSong(song: JSONObject): SongCandidate? {
-        val id = song.number("id")?.takeIf { it > 0 } ?: return null
+        val id = song.long("id")?.takeIf { it > 0 } ?: return null
         val title = song.string("title") ?: song.string("name") ?: return null
         val album = song.optJSONObject("album")
         val albumMid = album?.string("mid")?.takeIf(MID::matches) ?: album?.string("pmid")?.takeIf(MID::matches)
@@ -151,11 +153,11 @@ class QqMusicClient : MusicSourceClient {
             title = unescape(title).replace(Regex("</?em>"), ""),
             artists = song.optJSONArray("singer").objects().mapNotNull { it.string("name")?.let(::unescape) },
             album = album?.string("title")?.let(::unescape) ?: album?.string("name")?.let(::unescape).orEmpty(),
-            albumId = album?.number("id")?.takeIf { it > 0 },
-            durationMs = song.number("interval")?.takeIf { it in 1..86_400 }?.times(1000),
+            albumId = album?.long("id")?.takeIf { it > 0 },
+            durationMs = song.long("interval")?.takeIf { it in 1..86_400 }?.times(1000),
             coverUrl = albumMid?.let { "https://y.gtimg.cn/music/photo_new/T002R800x800M000$it.jpg" },
             publishTimeMs = null,
-            trackNumber = song.number("index_album")?.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt(),
+            trackNumber = song.long("index_album")?.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt(),
             source = source,
             mid = song.string("mid")?.takeIf(MID::matches),
         )
@@ -165,11 +167,6 @@ class QqMusicClient : MusicSourceClient {
         val code = match.groupValues[1].let { if (it.startsWith('x')) it.drop(1).toIntOrNull(16) else it.toIntOrNull() }
         if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else match.value
     }.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-
-    private fun JSONObject.string(key: String): String? = (opt(key) as? String)?.trim()?.takeIf(String::isNotEmpty)
-    private fun JSONObject.number(key: String): Long? = opt(key)?.takeUnless { it == JSONObject.NULL }?.toString()?.toLongOrNull()
-    private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else
-        (0 until length()).mapNotNull(::optJSONObject)
 
     private companion object {
         const val REFERER = "https://y.qq.com/"
