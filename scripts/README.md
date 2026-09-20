@@ -10,7 +10,7 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 - 仅 GitHub Release 的 `published` 事件触发打包（包含预发布）；检查通过后，构建并验证签名 APK。推送分支、推送标签、保存 Release 草稿均不打包，也不提供手动 Run workflow 入口。
 - 标签须等于 `v` 加 Gradle 的 `versionName`；标签不会修改版本，发布前更新 `versionCode` 与 `versionName`。
 - 版本准备使用 `release/<versionName>` 书签，通过 PR 合并。执行 `jj git fetch --remote origin` 同步 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`。最后在 GitHub Releases 选择该标签并点击 Publish release，触发打包；将占位符替换为实际版本。首次切换此流程时，须先合并工作流修改，再从包含该修改的主线提交创建标签。
-- 成功的 APK 在运行记录的 Artifacts 中下载，检查报告在 `Check-reports` 中查看。产物保留 14 天，不自动创建 GitHub Release。
+- 发布构建成功后，APK 自动附加到触发本次构建的 GitHub Release。上传任务单独获得 Release 写权限，PR 与构建任务保持只读；重复执行时跳过内容相同的附件，同名不同内容则报错。Actions 中也保留 APK 和 `Check-reports` 14 天，不自动创建新的 Release。
 
 使用 GitHub 托管的 Windows runner 和 PowerShell 7.6+。Actions checkout 获取本次事件的源码，PR 检查合并结果；不在 runner 上初始化 jj 仓库。Java、Android SDK 与 Build Tools 的版本由 `app/build.gradle.kts` 读取，依赖由 Gradle 管理。`prepare-ci.ps1` 只在 GitHub runner 上安装所需 SDK，不修改本机环境。
 
