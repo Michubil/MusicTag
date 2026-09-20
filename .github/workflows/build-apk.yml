@@ -1,11 +1,10 @@
 name: Build APK
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,7 +54,7 @@ jobs:
 
       - name: Restore release signing key
         id: signing
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release' && github.event.action == 'published'
         env:
           KEYSTORE_BASE64: ${{ secrets.MUSICTAG_KEYSTORE_BASE64 }}
         run: |
