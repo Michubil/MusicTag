@@ -18,6 +18,8 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 45
+    outputs:
+      version: ${{ steps.config.outputs.version }}
     defaults:
       run:
         shell: pwsh -NoProfile -Command "{0}"
@@ -100,3 +102,42 @@ jobs:
             core/designsystem/build/test-results/
           if-no-files-found: warn
           retention-days: 14
+
+  publish:
+    name: Attach APK to Release
+    needs: build
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      APK_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download verified APK and attach to Release
+        shell: pwsh -NoProfile -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -cne "v$env:APK_VERSION") { throw 'Release tag does not match APK version.' }
+          $directory = Join-Path $env:RUNNER_TEMP 'release-apk'
+          gh run download $env:GITHUB_RUN_ID --repo $env:GH_REPO --name "MusicTag-v$env:APK_VERSION" --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw 'APK artifact download failed.' }
+          $name = "MusicTag-v$env:APK_VERSION.apk"
+          $apk = Join-Path $directory $name
+          if (-not (Test-Path -LiteralPath $apk -PathType Leaf)) { throw 'Verified APK is missing.' }
+          $releaseJson = gh api "repos/$env:GH_REPO/releases/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Release lookup failed.' }
+          $release = $releaseJson | ConvertFrom-Json
+          $existing = $release.assets | Where-Object { $_.name -ceq $name }
+          if ($existing) {
+            $digest = 'sha256:' + (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($existing.digest -ne $digest) { throw 'A different APK already exists on this Release.' }
+            Write-Output 'The same APK is already attached.'
+          } else {
+            gh release upload $env:RELEASE_TAG $apk --repo $env:GH_REPO
+            if ($LASTEXITCODE -ne 0) { throw 'Release APK upload failed.' }
+          }
