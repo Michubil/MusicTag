@@ -18,8 +18,8 @@ android {
         applicationId = "top.michubil.musictag"
         minSdk = 35
         targetSdk = 37
-        versionCode = 27
-        versionName = "1.2.1"
+        versionCode = 28
+        versionName = "1.2.2"
 
         ndk {
             abiFilters += "arm64-v8a"
