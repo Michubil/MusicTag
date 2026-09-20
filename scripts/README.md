@@ -4,11 +4,12 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 
 ## GitHub Actions
 
-- PR 与推送到 `main`：脚本语法、GUI/SAF 边界、两个模块的单元测试与 Lint。
-- jj 书签推送后对应 GitHub 分支；重写同一书签并推送会更新 PR，取消该 PR 或主分支上的过期检查。标签和手动打包各自独立运行。
+- PR：脚本语法、GUI/SAF 边界、两个模块的单元测试与 Lint。`main` 更新不再触发重复检查。
+- `main` 必须通过 PR 合并，GitHub Actions 的 `build` 检查通过且分支与主线保持最新后才允许合并，管理员同样受约束。
+- jj 书签推送后对应 GitHub 分支；重写同一书签并推送会更新 PR，取消该 PR 的过期检查。标签和手动打包各自独立运行。
 - 推送 `v*` 标签或手动 Run workflow：上述检查通过后，构建并验证签名 Release APK。
 - 标签须等于 `v` 加 Gradle 的 `versionName`；标签不会修改版本，发布前更新 `versionCode` 与 `versionName`。
-- 本地通过 Jujutsu 发布：先推送完成的 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`；将占位符替换为实际版本。
+- 本地通过 Jujutsu 发布：PR 合并后执行 `jj git fetch --remote origin` 同步 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`；将占位符替换为实际版本。
 - 成功的 APK 在运行记录的 Artifacts 中下载，检查报告在 `Check-reports` 中查看。产物保留 14 天，不自动创建 GitHub Release。
 
 使用 GitHub 托管的 Windows runner 和 PowerShell 7.6+。Actions checkout 获取本次事件的源码，PR 检查合并结果；不在 runner 上初始化 jj 仓库。Java、Android SDK 与 Build Tools 的版本由 `app/build.gradle.kts` 读取，依赖由 Gradle 管理。`prepare-ci.ps1` 只在 GitHub runner 上安装所需 SDK，不修改本机环境。
