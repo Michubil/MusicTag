@@ -1,0 +1,15 @@
+Android GUI
+Copyright 2026 Android GUI contributors
+
+This product contains an independent Jetpack Compose design-system implementation whose visual and
+interaction reference includes LibChecker (https://github.com/LibChecker/LibChecker), copyright
+the LibChecker contributors, licensed under the Apache License, Version 2.0.
+
+Fixed color values have been adapted from LibChecker's md_themes.xml at commit
+7ea356187e89652f486c60608560ffee628992b3 into Compose ColorScheme and splash color resources.
+Motion values are adapted from the same LibChecker snapshot, Material Components for Android
+1.14.0, and Android 17 framework animation resources. Material and framework resources are
+copyright The Android Open Source Project and licensed under Apache License, Version 2.0.
+These adaptations and their reference sources are documented in THIRD_PARTY_NOTICES.md.
+
+No LibChecker logo, trademark, brand artwork, or View/XML user-interface source is included.

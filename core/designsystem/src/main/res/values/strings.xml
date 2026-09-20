@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Music Tag adaptation: accessible toolbar menu label. -->
+    <string name="app_menu">Menu</string>
+    <string name="app_collapse_menu">Collapse menu</string>
+    <string name="app_search">Search</string>
+    <string name="app_close_search">Close search</string>
+</resources>

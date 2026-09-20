@@ -1,0 +1,104 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Bookmark rewrites supersede branch/PR checks; each packaging run stays independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')) && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "{0}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Read build configuration
+        id: config
+        run: |
+          . .\scripts\BuildSupport.ps1
+          $settings = getBuildSettings
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$($settings.Version)") {
+            throw 'The tag must match versionName in app/build.gradle.kts.'
+          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "java-version=$($settings.JavaVersion)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$($settings.Version)"
+          $signingKey = Join-Path $env:RUNNER_TEMP 'musictag-signing.keystore'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "MUSICTAG_KEYSTORE_PATH=$signingKey"
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java-version }}
+
+      - name: Prepare Android SDK
+        run: .\scripts\prepare-ci.ps1
+
+      - name: Check source, tests and lint
+        run: .\scripts\test.ps1 -SdkPath $env:ANDROID_HOME
+
+      - name: Restore release signing key
+        id: signing
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MUSICTAG_KEYSTORE_BASE64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) {
+            throw 'Set the MUSICTAG_KEYSTORE_BASE64 repository secret to the existing signing key.'
+          }
+          [IO.File]::WriteAllBytes(
+            $env:MUSICTAG_KEYSTORE_PATH,
+            [Convert]::FromBase64String($env:KEYSTORE_BASE64)
+          )
+
+      - name: Build and verify release APK
+        id: apk
+        if: steps.signing.outcome == 'success'
+        run: .\scripts\build-apk.ps1 -SdkPath $env:ANDROID_HOME
+
+      - name: Upload APK
+        if: steps.apk.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: MusicTag-v${{ steps.config.outputs.version }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove release signing key
+        if: always()
+        run: |
+          if ($env:MUSICTAG_KEYSTORE_PATH -and (Test-Path -LiteralPath $env:MUSICTAG_KEYSTORE_PATH)) {
+            Remove-Item -LiteralPath $env:MUSICTAG_KEYSTORE_PATH -Force
+          }
+
+      - name: Upload check reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Check-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            core/designsystem/build/reports/
+            core/designsystem/build/test-results/
+          if-no-files-found: warn
+          retention-days: 14
