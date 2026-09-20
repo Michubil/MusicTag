@@ -68,7 +68,9 @@ android {
     }
 
     lint {
-        disable += listOf("ChromeOsAbiSupport", "LockedOrientationActivity", "DiscouragedApi", "NewerVersionAvailable")
+        // Dependency upgrades are deliberate; publishing a newer version must not break this build.
+        disable += listOf("ChromeOsAbiSupport", "LockedOrientationActivity", "DiscouragedApi",
+            "NewerVersionAvailable", "AndroidGradlePluginVersion")
         warningsAsErrors = true
     }
 }

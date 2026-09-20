@@ -2,7 +2,6 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     branches: [main]
@@ -11,10 +10,10 @@ on:
 permissions:
   contents: read
 
-# Bookmark rewrites supersede branch/PR checks; each packaging run stays independent.
+# Bookmark rewrites supersede PR checks; each packaging run stays independent.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')) && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
