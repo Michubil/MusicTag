@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Read build configuration
         id: config
@@ -36,6 +37,10 @@ jobs:
           $settings = getBuildSettings
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$($settings.Version)") {
             throw 'The tag must match versionName in app/build.gradle.kts.'
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'release') {
+            git merge-base --is-ancestor HEAD origin/main
+            if ($LASTEXITCODE -ne 0) { throw 'The Release tag must point to a commit on main.' }
           }
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "java-version=$($settings.JavaVersion)"
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$($settings.Version)"
