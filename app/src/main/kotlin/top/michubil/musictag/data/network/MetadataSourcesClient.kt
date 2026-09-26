@@ -15,8 +15,9 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
     }
 
     suspend fun candidates(track: LocalTrack, options: ScrapeOptions): List<MatchResult> {
+        if (options.policies.values.none { it.enabled }) return emptyList()
         val responses = searchSources(track, options.sources[searchGroup(options)].sources)
-        val songs = responses.values.flatMap { it.getOrNull().orEmpty() }.distinctBy { it.key }
+        val songs = responses.values.flatMap { it.getOrNull().orEmpty() }
         if (songs.isEmpty()) responses.values.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
         return SongMatcher.rank(track, songs)
     }
@@ -32,15 +33,15 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
     }
 
     private fun referenceTrack(track: LocalTrack, candidate: SongCandidate?): LocalTrack =
-        candidate?.let { LocalTrack(track.fileName, it.title, it.artists,
-            it.album.takeIf(String::isNotBlank), it.durationMs) } ?: track
+        candidate?.let { song -> LocalTrack(track.fileName, song.title, song.artists,
+            song.album.takeIf(String::isNotBlank), track.durationMs?.takeIf { it > 0 } ?: song.durationMs) } ?: track
 
     suspend fun metadata(track: LocalTrack, options: ScrapeOptions, forced: SongCandidate?): ScrapedMetadata {
         val selected = options.policies.filterValues { it.enabled }.keys
+        if (selected.isEmpty()) return ScrapedMetadata()
         val matches = mutableMapOf<MusicSource, SongCandidate?>()
         val downloaded = mutableMapOf<MusicSource, ScrapedMetadata>()
         val attempted = mutableMapOf<MusicSource, Set<MetadataField>>()
-        var anchor = forced
         if (forced != null) matches[forced.source] = forced
         var failure: Throwable? = null
 
@@ -54,6 +55,14 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             }
         }
         val searches = searchSources(referenceTrack(track, forced), sources)
+        val candidates = searches.values.flatMap { it.getOrNull().orEmpty() }
+        val anchor = forced ?: SongMatcher.automatic(track, candidates)?.candidate ?: run {
+            val searchFailure = if (candidates.isEmpty())
+                searches.values.firstNotNullOfOrNull { it.exceptionOrNull() } else null
+            throw IllegalStateException(searchFailure?.message
+                ?: "未找到足够可靠的匹配或候选存在冲突，请单独选择该文件手动匹配", searchFailure)
+        }
+        matches[anchor.source] = anchor
 
         suspend fun fetch(source: MusicSource, required: Set<MetadataField>): ScrapedMetadata {
             val fields = metadataRequestFields(source, required, selected, attempted, downloaded) { order(it) }
@@ -61,15 +70,13 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             val supported = fields.intersect(clients.getValue(source).supportedFields)
             val response = sourceResult {
                 if (supported.isNotEmpty() && source !in matches) {
-                    val referenceSong = anchor
-                    val reference = referenceTrack(track, referenceSong)
+                    val reference = referenceTrack(track, anchor)
                     val candidates = searches.getValue(source).getOrThrow()
-                    val compatible = if (referenceSong == null) candidates else candidates.filter { sameRecording(referenceSong, it) }
+                    val compatible = candidates.filter { sameRecording(anchor, it) }
                     matches[source] = SongMatcher.automatic(reference, compatible)?.candidate
                 }
                 val candidate = matches[source]
                 if (candidate == null || supported.isEmpty()) ScrapedMetadata() else {
-                    if (anchor == null) anchor = candidate
                     clients.getValue(source).metadata(candidate, supported)
                 }
             }
