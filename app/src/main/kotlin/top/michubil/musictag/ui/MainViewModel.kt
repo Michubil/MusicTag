@@ -22,7 +22,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import top.michubil.musictag.MusicTagApplication
+import top.michubil.musictag.data.AppPreferences
+import top.michubil.musictag.data.MusicRepository
+import top.michubil.musictag.data.ThemeMode
+import top.michubil.musictag.data.model.MetadataField
+import top.michubil.musictag.data.model.MetadataGroup
+import top.michubil.musictag.data.model.SourceOrder
+import top.michubil.musictag.data.rename.RenamePreset
 import top.michubil.musictag.data.model.ScrapeOptions
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
@@ -43,15 +49,12 @@ import top.michubil.musictag.data.AlbumSort
 import top.michubil.musictag.data.FileSort
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val container = (application as MusicTagApplication).container
+    private val preferences = AppPreferences(application)
+    private val repository = MusicRepository(application)
     private val mutableState = MutableStateFlow(
-        container.preferences.state.value.let { preferences ->
+        preferences.state.value.let { preferences ->
             preferences.applyTo(
-                MainUiState(
-                    treeUri = preferences.storageTreeUri,
-                    sortDraft = preferences.fileSort,
-                    sortDescendingDraft = preferences.sortDescending,
-                ),
+                MainUiState(treeUri = preferences.storageTreeUri),
             )
         },
     )
@@ -72,8 +75,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var renameInputs: RenameInputs? = null
     private val tagEditor = TagEditorSession(
         scope = viewModelScope,
-        readTags = container.repository::readTagEditorContent,
-        readCover = container.repository::readCover,
+        readTags = repository::readTagEditorContent,
+        readCover = repository::readCover,
         state = { mutableState.value.editor },
         publish = { editor -> mutableState.update { it.copy(editor = editor) } },
         notify = { message -> mutableState.update { it.copy(message = message) } },
@@ -121,239 +124,314 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
         }
         viewModelScope.launch {
-            container.preferences.state.collectLatest { preferences ->
+            preferences.state.collectLatest { preferences ->
                 mutableState.update { preferences.applyTo(it) }
             }
         }
     }
 
-    fun onAction(action: MainAction) {
-        when (action) {
-            MainAction.Refresh -> if (!mutableState.value.busy && authorizationJob?.isActive != true && listingJob?.isActive != true) refreshDirectory()
-            MainAction.PullRefresh -> {
-                val snapshot = mutableState.value
-                when {
-                    snapshot.searching -> if (snapshot.canRefreshSearch) rebuildLibrary(userInitiated = true)
-                    snapshot.canRefresh -> refreshDirectory(userInitiated = true)
-                }
-            }
-            MainAction.OpenSearch -> if (mutableState.value.canSearch) {
-                mutableState.update { it.copy(fileMenuExpanded = false) }
-                effectChannel.trySend(MainEffect.OpenSearch)
-            }
-            MainAction.ActivateSearch -> if (!mutableState.value.searching) {
-                mutableState.update {
-                    it.copy(searching = true, searchQuery = "", searchItems = emptyList(), selected = emptySet(),
-                        editMenuExpanded = false, fileMenuExpanded = false)
-                }
-            }
-            MainAction.CloseSearch -> effectChannel.trySend(MainEffect.CloseSearch)
-            MainAction.LeaveSearch -> leaveSearch()
-            is MainAction.SetSearchQuery -> {
-                val query = action.query.take(120)
-                mutableState.update { it.copy(searchQuery = query, searchItems = if (query.isBlank()) emptyList() else it.searchItems) }
-            }
-            is MainAction.DirectoryShown -> {
-                if (requestedDirectory != action.uri) {
-                    mutableState.value.directory?.let { directoryLocations.put(it.uri, it) }
-                    mutableState.value.items.firstOrNull { it.document.uri == action.uri }?.document?.let {
-                        directoryLocations.put(it.uri, if (mutableState.value.showingCachedContent) it.copy(relativePath = null) else it)
-                    }
-                    requestedDirectory = action.uri
-                    cancelPreviewLoads()
-                    mutableState.update { it.copy(items = emptyList(), selected = emptySet(), showingCachedContent = false) }
-                    refreshDirectory(navigating = true)
-                }
-            }
-            is MainAction.OpenDirectory -> if (mutableState.value.canOpenDirectories && mutableState.value.items.any { it.document.uri == action.uri && it.document.isDirectory }) {
-                effectChannel.trySend(MainEffect.OpenDirectory(action.uri))
-            }
-            is MainAction.ToggleSelection -> mutableState.update { state ->
-                if (!state.canSelectFiles || state.visibleItems.none { it.document.uri == action.uri }) state
-                else state.copy(selected = if (action.uri in state.selected) state.selected - action.uri else state.selected + action.uri)
-            }
-            MainAction.ToggleSelectAll -> mutableState.update { state ->
-                if (!state.canSelectFiles) return@update state
-                val visible = state.visibleItems.map { it.document.uri }.toSet()
-                state.copy(
-                    selected = if (visible.isNotEmpty() && visible.all(state.selected::contains))
-                        state.selected - visible else state.selected + visible,
-                    fileMenuExpanded = false,
-                )
-            }
-            MainAction.ClearSelection -> mutableState.update { it.copy(selected = emptySet(), fileMenuExpanded = false) }
-            MainAction.ShowOptions -> if (canStartFileOperation()) {
-                mutableState.update { it.copy(editMenuExpanded = false) }
-                effectChannel.trySend(MainEffect.OpenOptions)
-            }
-            is MainAction.SetEditMenu -> mutableState.update {
-                it.copy(editMenuExpanded = action.expanded && it.canEditSelection, fileMenuExpanded = false)
-            }
-            MainAction.ShowRename -> if (canStartFileOperation()) {
-                mutableState.update { it.copy(editMenuExpanded = false) }
-                effectChannel.trySend(MainEffect.OpenRename)
-                loadRenameInputs()
-            }
-            is MainAction.SetRenamePreset -> if (!mutableState.value.busy) {
-                mutableState.update { it.copy(renamePreset = action.preset) }
-                updateRenamePreview()
-            }
-            is MainAction.SetRenamePattern -> if (!mutableState.value.busy) {
-                mutableState.update { it.copy(renameCustomPattern = action.pattern.take(240)) }
-                updateRenamePreview()
-            }
-            MainAction.ReloadRename -> loadRenameInputs()
-            MainAction.CancelRenamePreview -> resetRenamePreview()
-            MainAction.StartRenaming -> startRenaming()
-            MainAction.ShowTagEditor -> if (canStartFileOperation()) {
-                mutableState.update { it.copy(editMenuExpanded = false) }
-                effectChannel.trySend(MainEffect.OpenTagEditor)
-                loadTags()
-            }
-            MainAction.ReloadTags -> loadTags()
-            MainAction.CancelTagEditor -> tagEditor.close()
-            MainAction.SaveTags -> saveTags()
-            is MainAction.SetTagText -> if (!mutableState.value.busy) tagEditor.changeDraft {
-                it.copy(text = it.text + (action.field to action.value), changed = it.changed + action.field)
-            }
-            is MainAction.SetTagSelected -> if (!mutableState.value.busy) tagEditor.changeDraft {
-                it.copy(changed = if (action.selected) it.changed + action.field else it.changed - action.field)
-            }
-            MainAction.ChooseTagCover -> if (canStartFileOperation() && mutableState.value.editor.canChange) {
-                effectChannel.trySend(MainEffect.ChooseTagCover)
-            }
-            is MainAction.TagCoverSelected -> if (!mutableState.value.busy) tagEditor.loadCover(action.uri)
-            MainAction.RemoveTagCover -> if (!mutableState.value.busy) tagEditor.removeCover()
-            MainAction.ShowDurationFilter -> if (!mutableState.value.busy) mutableState.update { it.copy(durationDialog = true) }
-            MainAction.DismissDurationFilter -> mutableState.update { it.copy(durationDialog = false) }
-            is MainAction.SetDurationFilter -> if (!mutableState.value.busy) {
-                applyFilters(mutableState.value.audioFilters.copy(minimumSeconds = action.seconds))
-            }
-            MainAction.ShowPathFilter -> if (!mutableState.value.busy) mutableState.update {
-                it.copy(pathDialog = true, pathDraft = it.audioFilters.excludedPaths.joinToString("\n"), pathError = null)
-            }
-            MainAction.DismissPathFilter -> mutableState.update { it.copy(pathDialog = false) }
-            is MainAction.SetPathDraft -> mutableState.update {
-                it.copy(pathDraft = action.text, pathError = runCatching { AudioFilters.parsePaths(action.text) }.exceptionOrNull()?.userMessage())
-            }
-            MainAction.ApplyPathFilter -> if (!mutableState.value.busy) {
-                val snapshot = mutableState.value
-                val paths = runCatching { AudioFilters.parsePaths(snapshot.pathDraft) }
-                if (paths.isSuccess) applyFilters(snapshot.audioFilters.copy(excludedPaths = paths.getOrThrow()))
-                else mutableState.update { it.copy(pathError = paths.exceptionOrNull()?.userMessage()) }
-            }
-            is MainAction.SetFieldEnabled -> mutableState.update {
-                it.copy(policies = it.policies + (action.field to it.policies.getValue(action.field).copy(enabled = action.enabled)))
-            }
-            is MainAction.SetOverwrite -> mutableState.update {
-                it.copy(policies = it.policies + (action.field to it.policies.getValue(action.field).copy(overwrite = action.enabled)))
-            }
-            MainAction.ToggleAllFields -> mutableState.update { state ->
-                val enabled = state.policies.values.any { !it.enabled }
-                state.copy(policies = state.policies.mapValues { (_, policy) -> policy.copy(enabled = enabled) })
-            }
-            MainAction.ToggleAllOverwrite -> mutableState.update { state ->
-                val overwrite = state.policies.values.any { it.enabled && !it.overwrite }
-                state.copy(policies = state.policies.mapValues { (_, policy) ->
-                    if (policy.enabled) policy.copy(overwrite = overwrite) else policy
-                })
-            }
-            is MainAction.SetRecursive -> if (!mutableState.value.busy) container.preferences.setRecursive(action.enabled)
-            MainAction.StartAutomatic -> startScraping(null)
-            MainAction.LoadCandidates -> loadCandidates()
-            MainAction.CancelCandidateSearch -> cancelCandidateSearch()
-            is MainAction.ChooseCandidate -> if (mutableState.value.candidates.any { it.candidate == action.candidate }) {
-                startScraping(action.candidate)
-            }
-            MainAction.DismissTransientUi -> mutableState.update {
-                it.copy(themeDialog = false, sortDialog = false, fileMenuExpanded = false, editMenuExpanded = false,
-                    durationDialog = false, pathDialog = false, mp3TagVersionDialog = false, sourceDialog = null,
-                    albumSortDialog = false, albumColumnsDialog = false)
-            }
-            MainAction.ConsumeMessage -> mutableState.update { it.copy(message = null) }
-            MainAction.ShowThemeDialog -> mutableState.update { it.copy(themeDialog = true) }
-            MainAction.DismissThemeDialog -> mutableState.update { it.copy(themeDialog = false) }
-            is MainAction.SetTheme -> {
-                container.preferences.setThemeMode(action.mode)
-                mutableState.update { it.copy(themeDialog = false) }
-            }
-            is MainAction.SetDynamicColor -> container.preferences.setDynamicColor(action.enabled)
-            is MainAction.SetFormatLyricsTimeline -> container.preferences.setFormatLyricsTimeline(action.enabled)
-            MainAction.ShowMp3TagVersionDialog -> if (!mutableState.value.busy) {
-                mutableState.update { it.copy(mp3TagVersionDialog = true) }
-            }
-            MainAction.DismissMp3TagVersionDialog -> mutableState.update { it.copy(mp3TagVersionDialog = false) }
-            is MainAction.ShowSourceDialog -> if (!mutableState.value.busy) {
-                mutableState.update { it.copy(sourceDialog = action.group) }
-            }
-            MainAction.DismissSourceDialog -> mutableState.update { it.copy(sourceDialog = null) }
-            is MainAction.SetSourceOrder -> if (!mutableState.value.busy) {
-                container.preferences.setSourceOrder(action.group, action.order)
-                mutableState.update { it.copy(sourceDialog = null, candidates = emptyList()) }
-            }
-            is MainAction.SetMp3TagVersion -> if (!mutableState.value.busy) {
-                container.preferences.setMp3TagVersion(action.version)
-                mutableState.update { it.copy(mp3TagVersionDialog = false) }
-            }
-            is MainAction.SetFileMenu -> mutableState.update { it.copy(fileMenuExpanded = action.expanded) }
-            MainAction.ShowSortDialog -> if (mutableState.value.canSort) mutableState.update {
-                it.copy(sortDialog = true, fileMenuExpanded = false, sortDraft = it.fileSort, sortDescendingDraft = it.sortDescending)
-            }
-            is MainAction.SetSortDraft -> mutableState.update { it.copy(sortDraft = action.sort) }
-            is MainAction.SetSortDescendingDraft -> mutableState.update { it.copy(sortDescendingDraft = action.descending) }
-            MainAction.DismissSortDialog -> mutableState.update { it.copy(sortDialog = false) }
-            MainAction.ApplySort -> {
-                val snapshot = mutableState.value
-                if (!snapshot.canSort) return
-                container.preferences.setFileSort(snapshot.sortDraft, snapshot.sortDescendingDraft)
-                mutableState.update { it.copy(sortDialog = false) }
-                if (!snapshot.searching) refreshDirectory()
-            }
-            MainAction.ChooseStorageTree -> if (!mutableState.value.busy && !mutableState.value.loading) {
-                mutableState.update { it.copy(fileMenuExpanded = false) }
-                effectChannel.trySend(MainEffect.ChooseStorageTree)
-            }
-            is MainAction.StorageTreeSelected -> selectTree(action.uri, action.grantFlags)
-            is MainAction.LoadFilePreview -> loadFilePreview(action.item)
-            is MainAction.ReleaseArtwork -> {
-                previewJobs.remove(action.item)?.cancel()
-                if (mutableState.value.containsPreviewItem(action.item)) action.item.releaseArtwork()
-            }
-            MainAction.ShowAbout -> effectChannel.trySend(MainEffect.OpenAbout)
-            MainAction.CheckUpdates -> checkUpdates()
-            MainAction.ConfirmUpdateDownload -> {
-                val update = mutableState.value.availableUpdate ?: return
-                mutableState.update { it.copy(availableUpdate = null) }
-                effectChannel.trySend(MainEffect.OpenUrl(update.downloadUrl))
-            }
-            MainAction.DismissUpdateDownload -> mutableState.update { it.copy(availableUpdate = null) }
-            MainAction.OpenSourceRepository -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Repository))
-            MainAction.OpenLicense -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.License))
-            MainAction.OpenNotices -> effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Notices))
-            is MainAction.ShowMessage -> mutableState.update { it.copy(message = action.message) }
-            MainAction.AlbumsShown -> showAlbums()
-            MainAction.RebuildLibrary -> if (mutableState.value.canRefreshLibrary) rebuildLibrary(userInitiated = true)
-            is MainAction.OpenAlbum -> openAlbum(action.key)
-            MainAction.LeaveAlbum -> leaveAlbum()
-            MainAction.ShowAlbumSortDialog -> mutableState.update { it.copy(albumSortDialog = true, fileMenuExpanded = false) }
-            MainAction.DismissAlbumSortDialog -> mutableState.update { it.copy(albumSortDialog = false) }
-            is MainAction.SetAlbumSort -> {
-                container.preferences.setAlbumSort(action.sort)
-                mutableState.update {
-                    it.copy(albumSortDialog = false, albumSort = action.sort)
-                }
-            }
-            MainAction.ShowAlbumColumnsDialog -> mutableState.update { it.copy(albumColumnsDialog = true, fileMenuExpanded = false) }
-            MainAction.DismissAlbumColumnsDialog -> mutableState.update { it.copy(albumColumnsDialog = false) }
-            is MainAction.SetAlbumMinColumns -> {
-                val columns = action.columns.coerceIn(2, 4)
-                container.preferences.setAlbumMinColumns(columns)
-                mutableState.update { it.copy(albumColumnsDialog = false, albumMinColumns = columns) }
+    fun refresh() { if (!mutableState.value.busy && authorizationJob?.isActive != true && listingJob?.isActive != true) refreshDirectory() }
+
+    fun pullRefresh() {
+        val snapshot = mutableState.value
+        when {
+            snapshot.searching -> if (snapshot.canRefreshSearch) rebuildLibrary(userInitiated = true)
+            snapshot.canRefresh -> refreshDirectory(userInitiated = true)
+        }
+    }
+
+    fun openSearch() {
+        if (mutableState.value.canSearch) {
+            effectChannel.trySend(MainEffect.OpenSearch)
+        }
+    }
+
+    fun activateSearch() {
+        if (!mutableState.value.searching) {
+            mutableState.update {
+                it.copy(searching = true, searchQuery = "", searchItems = emptyList(), selected = emptySet())
             }
         }
     }
 
-    private fun showAlbums() {
+    fun closeSearch() { effectChannel.trySend(MainEffect.CloseSearch) }
+
+    fun setSearchQuery(query: String) {
+        val query = query.take(120)
+        mutableState.update { it.copy(searchQuery = query, searchItems = if (query.isBlank()) emptyList() else it.searchItems) }
+    }
+
+    fun directoryShown(uri: String) {
+        if (requestedDirectory != uri) {
+            mutableState.value.directory?.let { directoryLocations.put(it.uri, it) }
+            mutableState.value.items.firstOrNull { it.document.uri == uri }?.document?.let {
+                directoryLocations.put(it.uri, if (mutableState.value.showingCachedContent) it.copy(relativePath = null) else it)
+            }
+            requestedDirectory = uri
+            cancelPreviewLoads()
+            mutableState.update { it.copy(items = emptyList(), selected = emptySet(), showingCachedContent = false) }
+            refreshDirectory(navigating = true)
+        }
+    }
+
+    fun openDirectory(uri: String) {
+        if (mutableState.value.canOpenDirectories && mutableState.value.items.any { it.document.uri == uri && it.document.isDirectory }) {
+            effectChannel.trySend(MainEffect.OpenDirectory(uri))
+        }
+    }
+
+    fun toggleSelection(uri: String) {
+        mutableState.update { state ->
+            if (!state.canSelectFiles || state.visibleItems.none { it.document.uri == uri }) state
+            else state.copy(selected = if (uri in state.selected) state.selected - uri else state.selected + uri)
+        }
+    }
+
+    fun toggleSelectAll() {
+        mutableState.update { state ->
+            if (!state.canSelectFiles) return@update state
+            val visible = state.visibleItems.map { it.document.uri }.toSet()
+            state.copy(
+                selected = if (visible.isNotEmpty() && visible.all(state.selected::contains))
+                    state.selected - visible else state.selected + visible,
+            )
+        }
+    }
+
+    fun clearSelection() { mutableState.update { it.copy(selected = emptySet()) } }
+
+    fun showOptions() {
+        if (canStartFileOperation()) {
+            effectChannel.trySend(MainEffect.OpenOptions)
+        }
+    }
+
+    fun showRename() {
+        if (canStartFileOperation()) {
+            effectChannel.trySend(MainEffect.OpenRename)
+            loadRenameInputs()
+        }
+    }
+
+    fun setRenamePreset(preset: RenamePreset) {
+        if (!mutableState.value.busy) {
+            mutableState.update { it.copy(renamePreset = preset) }
+            updateRenamePreview()
+        }
+    }
+
+    fun setRenamePattern(pattern: String) {
+        if (!mutableState.value.busy) {
+            mutableState.update { it.copy(renameCustomPattern = pattern.take(240)) }
+            updateRenamePreview()
+        }
+    }
+
+    fun reloadRename() { loadRenameInputs() }
+
+    fun cancelRenamePreview() { resetRenamePreview() }
+
+    fun showTagEditor() {
+        if (canStartFileOperation()) {
+            effectChannel.trySend(MainEffect.OpenTagEditor)
+            loadTags()
+        }
+    }
+
+    fun reloadTags() { loadTags() }
+
+    fun cancelTagEditor() { tagEditor.close() }
+
+    fun setTagText(field: MetadataField, value: String) {
+        if (!mutableState.value.busy) tagEditor.changeDraft {
+            it.copy(text = it.text + (field to value), changed = it.changed + field)
+        }
+    }
+
+    fun setTagSelected(field: MetadataField, selected: Boolean) {
+        if (!mutableState.value.busy) tagEditor.changeDraft {
+            it.copy(changed = if (selected) it.changed + field else it.changed - field)
+        }
+    }
+
+    fun chooseTagCover() {
+        if (canStartFileOperation() && mutableState.value.editor.canChange) {
+            effectChannel.trySend(MainEffect.ChooseTagCover)
+        }
+    }
+
+    fun tagCoverSelected(uri: String) { if (!mutableState.value.busy) tagEditor.loadCover(uri) }
+
+    fun removeTagCover() { if (!mutableState.value.busy) tagEditor.removeCover() }
+
+    fun showDurationFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(durationDialog = true) } }
+
+    fun dismissDurationFilter() { mutableState.update { it.copy(durationDialog = false) } }
+
+    fun setDurationFilter(seconds: Int) {
+        if (!mutableState.value.busy) {
+            applyFilters(mutableState.value.audioFilters.copy(minimumSeconds = seconds))
+        }
+    }
+
+    fun showPathFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(pathDialog = true) } }
+
+    fun dismissPathFilter() { mutableState.update { it.copy(pathDialog = false) } }
+
+    fun applyPathFilter(text: String) {
+        if (!mutableState.value.busy) {
+            val snapshot = mutableState.value
+            applyFilters(snapshot.audioFilters.copy(excludedPaths = AudioFilters.parsePaths(text)))
+        }
+    }
+
+    fun setFieldEnabled(field: MetadataField, enabled: Boolean) {
+        mutableState.update {
+            it.copy(policies = it.policies + (field to it.policies.getValue(field).copy(enabled = enabled)))
+        }
+    }
+
+    fun setOverwrite(field: MetadataField, enabled: Boolean) {
+        mutableState.update {
+            it.copy(policies = it.policies + (field to it.policies.getValue(field).copy(overwrite = enabled)))
+        }
+    }
+
+    fun toggleAllFields() {
+        mutableState.update { state ->
+            val enabled = state.policies.values.any { !it.enabled }
+            state.copy(policies = state.policies.mapValues { (_, policy) -> policy.copy(enabled = enabled) })
+        }
+    }
+
+    fun toggleAllOverwrite() {
+        mutableState.update { state ->
+            val overwrite = state.policies.values.any { it.enabled && !it.overwrite }
+            state.copy(policies = state.policies.mapValues { (_, policy) ->
+                if (policy.enabled) policy.copy(overwrite = overwrite) else policy
+            })
+        }
+    }
+
+    fun setRecursive(enabled: Boolean) { if (!mutableState.value.busy) preferences.setRecursive(enabled) }
+
+    fun startAutomatic() { startScraping(null) }
+
+    fun chooseCandidate(candidate: SongCandidate) {
+        if (mutableState.value.candidates.any { it.candidate == candidate }) {
+            startScraping(candidate)
+        }
+    }
+
+    fun dismissTransientUi() {
+        mutableState.update {
+            it.copy(themeDialog = false, sortDialog = false,
+                durationDialog = false, pathDialog = false, sourceDialog = null,
+                albumSortDialog = false, albumColumnsDialog = false)
+        }
+    }
+
+    fun consumeMessage() { mutableState.update { it.copy(message = null) } }
+
+    fun showThemeDialog() { mutableState.update { it.copy(themeDialog = true) } }
+
+    fun dismissThemeDialog() { mutableState.update { it.copy(themeDialog = false) } }
+
+    fun setTheme(mode: ThemeMode) {
+        preferences.setThemeMode(mode)
+        mutableState.update { it.copy(themeDialog = false) }
+    }
+
+    fun setDynamicColor(enabled: Boolean) { preferences.setDynamicColor(enabled) }
+
+    fun setFormatLyricsTimeline(enabled: Boolean) { preferences.setFormatLyricsTimeline(enabled) }
+
+    fun showSourceDialog(group: MetadataGroup) {
+        if (!mutableState.value.busy) {
+            mutableState.update { it.copy(sourceDialog = group) }
+        }
+    }
+
+    fun dismissSourceDialog() { mutableState.update { it.copy(sourceDialog = null) } }
+
+    fun setSourceOrder(group: MetadataGroup, order: SourceOrder) {
+        if (!mutableState.value.busy) {
+            preferences.setSourceOrder(group, order)
+            mutableState.update { it.copy(sourceDialog = null, candidates = emptyList()) }
+        }
+    }
+
+    fun showSortDialog() {
+        if (mutableState.value.canSort) mutableState.update {
+            it.copy(sortDialog = true)
+        }
+    }
+
+    fun dismissSortDialog() { mutableState.update { it.copy(sortDialog = false) } }
+
+    fun applySort(sort: FileSort, descending: Boolean) {
+        val snapshot = mutableState.value
+        if (!snapshot.canSort) return
+        preferences.setFileSort(sort, descending)
+        mutableState.update { it.copy(sortDialog = false) }
+        if (!snapshot.searching) refreshDirectory()
+    }
+
+    fun chooseStorageTree() {
+        if (!mutableState.value.busy && !mutableState.value.loading) {
+            effectChannel.trySend(MainEffect.ChooseStorageTree)
+        }
+    }
+
+    fun storageTreeSelected(uri: String, grantFlags: Int) { selectTree(uri, grantFlags) }
+
+    fun releaseArtwork(item: FileItem) {
+        previewJobs.remove(item)?.cancel()
+        if (mutableState.value.containsPreviewItem(item)) item.releaseArtwork()
+    }
+
+    fun showAbout() { effectChannel.trySend(MainEffect.OpenAbout) }
+
+    fun confirmUpdateDownload() {
+        val update = mutableState.value.availableUpdate ?: return
+        mutableState.update { it.copy(availableUpdate = null) }
+        effectChannel.trySend(MainEffect.OpenUrl(update.downloadUrl))
+    }
+
+    fun dismissUpdateDownload() { mutableState.update { it.copy(availableUpdate = null) } }
+
+    fun openSourceRepository() { effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Repository)) }
+
+    fun openLicense() { effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.License)) }
+
+    fun openNotices() { effectChannel.trySend(MainEffect.OpenUrl(AboutLinks.Notices)) }
+
+    fun showMessage(message: String) { mutableState.update { it.copy(message = message) } }
+
+    fun refreshLibrary() { if (mutableState.value.canRefreshLibrary) rebuildLibrary(userInitiated = true) }
+
+    fun showAlbumSortDialog() { mutableState.update { it.copy(albumSortDialog = true) } }
+
+    fun dismissAlbumSortDialog() { mutableState.update { it.copy(albumSortDialog = false) } }
+
+    fun setAlbumSort(sort: AlbumSort) {
+        preferences.setAlbumSort(sort)
+        mutableState.update {
+            it.copy(albumSortDialog = false, albumSort = sort)
+        }
+    }
+
+    fun showAlbumColumnsDialog() { mutableState.update { it.copy(albumColumnsDialog = true) } }
+
+    fun dismissAlbumColumnsDialog() { mutableState.update { it.copy(albumColumnsDialog = false) } }
+
+    fun setAlbumMinColumns(columns: Int) {
+        val columns = columns.coerceIn(2, 4)
+        preferences.setAlbumMinColumns(columns)
+        mutableState.update { it.copy(albumColumnsDialog = false, albumMinColumns = columns) }
+    }
+
+    fun showAlbums() {
         if (libraryIndex.value == null) loadLibrary()
     }
 
@@ -385,7 +463,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 pruneJob?.cancel()
                 pruneJob?.join()
                 val built = withContext(LocalFileWork.dispatcher) {
-                    container.repository.indexLibrary(root, snapshot.audioFilters,
+                    repository.indexLibrary(root, snapshot.audioFilters,
                         forceRead = snapshot.libraryRefreshing,
                         onCached = { entries ->
                             val cached = withContext(Dispatchers.Default) { LibraryIndex(entries, isCached = true) }
@@ -448,7 +526,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun createFileItem(document: MusicDocument): FileItem = FileItem(document, libraryIndex.value?.track(document))
 
-    private fun openAlbum(key: String) {
+    fun openAlbum(key: String) {
         val album = mutableState.value.albums.firstOrNull { it.key == key } ?: return
         cancelPreviewLoads()
         mutableState.update {
@@ -457,19 +535,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 openedAlbumTitle = album.title,
                 albumItems = album.tracks.map(::createFileItem),
                 selected = emptySet(),
-                fileMenuExpanded = false,
             )
         }
         effectChannel.trySend(MainEffect.OpenAlbum(album.key))
     }
 
-    private fun leaveAlbum() {
+    fun leaveAlbum() {
         if (mutableState.value.openedAlbumKey == null) return
         cancelPreviewLoads(keeping = mutableState.value.albumCovers.values)
         mutableState.update { it.copy(openedAlbumKey = null, openedAlbumTitle = null, albumItems = emptyList(), selected = emptySet()) }
     }
 
-    private fun checkUpdates() {
+    fun checkUpdates() {
         if (updateJob?.isActive == true) return
         mutableState.update { it.copy(checkingUpdate = true, availableUpdate = null) }
         updateJob = viewModelScope.launch {
@@ -497,8 +574,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val previous = mutableState.value.treeUri
             try {
                 val root = withContext(LocalFileWork.dispatcher) {
-                    val selectedRoot = container.repository.authorizeTree(uri, flags)
-                    container.preferences.setStorageTreeUri(uri)
+                    val selectedRoot = repository.authorizeTree(uri, flags)
+                    preferences.setStorageTreeUri(uri)
                     selectedRoot
                 }
                 cancelCandidateSearch()
@@ -519,7 +596,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         libraryLoading = false, libraryReady = false, showingCachedLibrary = false, libraryRefreshing = false, libraryProgress = null)
                 }
                 if (previous != null && previous != uri) {
-                    withContext(LocalFileWork.dispatcher) { runCatching { container.repository.releaseTree(previous) } }
+                    withContext(LocalFileWork.dispatcher) { runCatching { repository.releaseTree(previous) } }
                 }
                 effectChannel.send(MainEffect.ResetBrowserRoot)
             } catch (error: CancellationException) {
@@ -538,7 +615,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!navigating) directoryLocations.evictAll()
         val snapshot = mutableState.value
         val tree = snapshot.treeUri
-        if (tree == null || !container.repository.hasGrant(tree)) {
+        if (tree == null || !repository.hasGrant(tree)) {
             pruneJob?.cancel()
             prunedTree = null
             cancelPreviewLoads()
@@ -563,16 +640,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     cancelPreviewLoads()
                     pruneJob?.cancel()
                     prunedTree = null
-                    container.repository.clearBrowseCache(tree)
+                    repository.clearBrowseCache(tree)
                 }
                 val root = snapshot.root?.takeIf { navigating && it.treeUri == tree }
-                    ?: withContext(LocalFileWork.dispatcher) { container.repository.root(tree) }
+                    ?: withContext(LocalFileWork.dispatcher) { repository.root(tree) }
                 val recoveryError = if (snapshot.busy) snapshot.recoveryError else withContext(LocalFileWork.dispatcher) {
-                    runCatching { container.repository.recover(tree) }.exceptionOrNull()?.userMessage()
+                    runCatching { repository.recover(tree) }.exceptionOrNull()?.userMessage()
                 }
-                val preferences = container.preferences.state.value
+                val preferences = preferences.state.value
                 if (!userInitiated && !snapshot.busy && recoveryError == null) {
-                    container.repository.cachedDirectory(tree, requested ?: root.uri, preferences.fileSort,
+                    repository.cachedDirectory(tree, requested ?: root.uri, preferences.fileSort,
                         preferences.sortDescending, preferences.audioFilters)?.let { cached ->
                         cancelPreviewLoads()
                         requestedDirectory = cached.directory.uri
@@ -586,13 +663,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val directory = withContext(LocalFileWork.dispatcher) {
                     if (requested == null || requested == root.uri) root
                     else runCatching {
-                        val fresh = container.repository.directory(tree, requested)
+                        val fresh = repository.directory(tree, requested)
                         val known = directoryLocations.get(requested)?.takeIf { it.treeUri == tree && it.name == fresh.name }
                         fresh.copy(relativePath = known?.relativePath)
                     }.getOrDefault(root)
                 }
                 val documents = withContext(LocalFileWork.dispatcher) {
-                    container.repository.list(directory, preferences.fileSort, preferences.sortDescending, preferences.audioFilters,
+                    repository.list(directory, preferences.fileSort, preferences.sortDescending, preferences.audioFilters,
                         onDirectories = { directories ->
                             withContext(Dispatchers.Main.immediate) {
                                 requestedDirectory = directory.uri
@@ -629,7 +706,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                val granted = container.repository.hasGrant(tree)
+                val granted = repository.hasGrant(tree)
                 if (!granted) cancelPreviewLoads()
                 mutableState.update {
                     it.copy(loading = false, refreshing = false, scanProgress = null, showingCachedContent = it.showingCachedContent && granted,
@@ -654,14 +731,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Drop/copy rows on list replacement; never clear the detached rows in place.
     }
 
-    private fun loadFilePreview(item: FileItem) {
+    fun loadFilePreview(item: FileItem) {
         if (item in previewJobs) return
         val snapshot = mutableState.value
         if (!snapshot.containsPreviewItem(item)) return
         previewJobs[item] = viewModelScope.launch {
             try {
                 previewSlots.withPermit {
-                    container.repository.preview(
+                    repository.preview(
                         item.document,
                         cachedOnly = snapshot.isCachedPreview(item),
                     ) { preview ->
@@ -695,7 +772,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(renameLoading = true) }
         renameReadJob = viewModelScope.launch {
             try {
-                renameInputs = container.repository.readRenameInputs(
+                renameInputs = repository.readRenameInputs(
                     snapshot.selectedDocuments(),
                     snapshot.recursive,
                     snapshot.audioFilters,
@@ -723,7 +800,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(renameEntries = entries, renameError = null) }
     }
 
-    private fun startRenaming() {
+    fun startRenaming() {
         val snapshot = mutableState.value
         if (!snapshot.canRename) return
         val entries = snapshot.renameEntries.filter { it.willRename }
@@ -733,7 +810,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fileWork.launch {
             effectChannel.send(MainEffect.ReturnToBrowser)
             val outcomes = mapFileResults(entries, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { entry ->
-                container.repository.rename(entry)
+                repository.rename(entry)
             }
             val (success, failures) = summarizeFileResults(entries, outcomes) { it.document.name }
             val result = "重命名完成：成功 $success 个，未更改 $unchanged 个，跳过 $skipped 个，失败 ${failures.size} 个"
@@ -742,14 +819,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun cancelCandidateSearch() {
+    fun cancelCandidateSearch() {
         val searching = candidateJob?.isActive == true
         candidateJob?.cancel()
         candidateJob = null
         mutableState.update { it.copy(candidates = emptyList(), candidateError = null, busy = if (searching) false else it.busy) }
     }
 
-    private fun loadCandidates() {
+    fun loadCandidates() {
         if (!canStartFileOperation()) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
@@ -757,14 +834,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         candidateJob = viewModelScope.launch {
             try {
                 val files = withContext(LocalFileWork.dispatcher) {
-                    container.repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
+                    repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
                 }
                 if (files.size != 1) {
                     mutableState.update { it.copy(busy = false, message = "手动匹配时请选择一个 FLAC、MP3 或 WAV 文件") }
                     return@launch
                 }
                 effectChannel.send(MainEffect.OpenCandidates)
-                val candidates = container.repository.candidates(files.single(), snapshot.toScrapeOptions())
+                val candidates = repository.candidates(files.single(), snapshot.toScrapeOptions())
                 mutableState.update { it.copy(candidates = candidates, busy = false) }
             } catch (error: CancellationException) {
                 throw error
@@ -782,7 +859,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fileWork.launch {
             try {
                 val files = withContext(LocalFileWork.dispatcher) {
-                    container.repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
+                    repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
                 }
                 if (files.isEmpty() || (candidate != null && files.size != 1)) {
                     mutableState.update { it.copy(message = "所选文件已不可用或没有 FLAC、MP3、WAV 文件") }
@@ -791,7 +868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 mutableState.update { it.copy(selected = emptySet(), fileProgress = ScanProgress(0, files.size)) }
                 effectChannel.send(MainEffect.ReturnToBrowser)
                 val outcomes = mapFileResults(files, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { file ->
-                    container.repository.scrape(file, snapshot.toScrapeOptions(), candidate)
+                    repository.scrape(file, snapshot.toScrapeOptions(), candidate)
                 }
                 val (successCount, failures) = summarizeFileResults(files, outcomes) { it.name }
                 val message = if (failures.isEmpty()) "刮削完成：成功 $successCount 个" else
@@ -806,10 +883,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun MainUiState.toScrapeOptions() = ScrapeOptions(policies, formatLyricsTimeline, mp3TagVersion, scrapeSources)
+    private fun MainUiState.toScrapeOptions() = ScrapeOptions(policies, formatLyricsTimeline, scrapeSources)
 
     private fun applyFilters(filters: AudioFilters) {
-        container.preferences.setAudioFilters(filters)
+        preferences.setAudioFilters(filters)
         mutableState.update { it.copy(audioFilters = filters, durationDialog = false, pathDialog = false, selected = emptySet()) }
         refreshDirectory()
         val snapshot = mutableState.value
@@ -820,7 +897,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (prunedTree == root.treeUri || pruneJob?.isActive == true || libraryJob?.isActive == true) return
         pruneJob = viewModelScope.launch {
             try {
-                withContext(LocalFileWork.dispatcher) { container.repository.pruneMissingCacheEntries(root) }
+                withContext(LocalFileWork.dispatcher) { repository.pruneMissingCacheEntries(root) }
                 prunedTree = root.treeUri
             } catch (error: CancellationException) {
                 throw error
@@ -833,7 +910,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun MainUiState.selectedDocuments(): List<MusicDocument> =
         visibleItems.filter { it.document.uri in selected }.map(FileItem::document)
 
-    private fun leaveSearch() {
+    fun leaveSearch() {
         if (!mutableState.value.searching) return
         mutableState.update {
             it.copy(
@@ -849,16 +926,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         tagEditor.load(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
     }
 
-    private fun saveTags() {
+    fun saveTags() {
         val snapshot = mutableState.value
         if (!snapshot.canSaveTags) return
-        val request = tagEditor.prepareSave(snapshot.mp3TagVersion) ?: return
+        val request = tagEditor.prepareSave() ?: return
         val sources = request.sources
         mutableState.update { it.copy(busy = true, selected = emptySet(), fileProgress = ScanProgress(0, sources.size)) }
         fileWork.launch {
             effectChannel.send(MainEffect.ReturnToBrowser)
             val outcomes = mapFileResults(sources, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { source ->
-                container.repository.editTags(source, request.mutation)
+                repository.editTags(source, request.mutation)
             }
             val (success, failures) = summarizeFileResults(sources, outcomes) { it.document.name }
             mutableState.update { it.copy(message = "标签保存完成：成功 $success 个，跳过 ${request.skipped} 个，失败 ${failures.size} 个" +
@@ -873,7 +950,6 @@ private fun UserPreferences.applyTo(state: MainUiState): MainUiState = state.cop
     fileSort = fileSort,
     sortDescending = sortDescending,
     formatLyricsTimeline = formatLyricsTimeline,
-    mp3TagVersion = mp3TagVersion,
     scrapeSources = scrapeSources,
     recursive = recursive,
     audioFilters = audioFilters,

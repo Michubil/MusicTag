@@ -38,15 +38,21 @@ class AppUpdateTest {
     }
 
     @Test
-    fun constructsTheReleaseApkUrlWhenNoTrustedAssetExists() {
-        val release = AppUpdate.releaseFrom(
+    fun rejectsReleaseWithoutTheExpectedTrustedAsset() {
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom(
             "v1.2.0",
             listOf(
                 GitHubAsset("MusicTag-v1.2.0.apk", "http://github.com/Michubil/MusicTag/releases/download/v1.2.0/MusicTag-v1.2.0.apk"),
                 GitHubAsset("MusicTag-v1.2.0.apk", "https://example.com/MusicTag-v1.2.0.apk"),
             ),
-        )
-        assertEquals(AppUpdate.downloadUrl("v1.2.0", "1.2.0"), release.downloadUrl)
+        ) }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom(
+            "v1.2.0", listOf(GitHubAsset("other.apk", "https://github.com/Michubil/MusicTag/releases/download/v1.2.0/other.apk")),
+        ) }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom(
+            "v1.2.0", listOf(GitHubAsset("MusicTag-v1.2.0.apk",
+                "https://github.com/Michubil/MusicTag/releases/download/v1.1.0/MusicTag-v1.2.0.apk")),
+        ) }
     }
 
     @Test
@@ -54,5 +60,7 @@ class AppUpdateTest {
         assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom("", emptyList()) }
         assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom("v1.0.0/extra", emptyList()) }
         assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom("v", emptyList()) }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom("1.2.0", emptyList()) }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.releaseFrom("v1.2", emptyList()) }
     }
 }

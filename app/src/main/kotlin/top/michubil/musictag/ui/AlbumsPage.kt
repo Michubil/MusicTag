@@ -25,11 +25,11 @@ import top.michubil.musictag.data.AlbumLibrary
 import top.michubil.musictag.data.AlbumSort
 
 @Composable
-fun AlbumsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
-    LaunchedEffect(state.root?.uri) { onAction(MainAction.AlbumsShown) }
+fun AlbumsPage(state: MainUiState, model: MainViewModel) {
+    LaunchedEffect(state.root?.uri) { model.showAlbums() }
     when {
         state.showStoragePicker -> AppRefreshableContentList(refreshing = false, enabled = false, onRefresh = {}) {
-            item { SelectMusicFolderEmpty(state, onAction) }
+            item { SelectMusicFolderEmpty(state, model) }
         }
         !state.storageGranted -> AppRefreshableContent(
             refreshing = false,
@@ -42,28 +42,28 @@ fun AlbumsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
         state.storageError != null -> AppRefreshableContentList(
             refreshing = false,
             enabled = state.canRefreshLibrary,
-            onRefresh = { onAction(MainAction.RebuildLibrary) },
+            onRefresh = { model.refreshLibrary() },
         ) {
             item {
                 ErrorState(
                     title = "无法读取专辑",
                     message = state.storageError,
                     actionLabel = "重试",
-                    onAction = { onAction(MainAction.RebuildLibrary) },
+                    onAction = { model.refreshLibrary() },
                 )
             }
         }
         state.libraryReady && !state.libraryLoading && state.albums.isEmpty() -> AppRefreshableContentList(
             refreshing = state.libraryRefreshing,
             enabled = state.canRefreshLibrary,
-            onRefresh = { onAction(MainAction.RebuildLibrary) },
+            onRefresh = { model.refreshLibrary() },
         ) {
             item { EmptyState(title = "没有找到专辑") }
         }
         else -> AppRefreshableContent(
             refreshing = state.libraryRefreshing,
             enabled = state.canRefreshLibrary,
-            onRefresh = { onAction(MainAction.RebuildLibrary) },
+            onRefresh = { model.refreshLibrary() },
             status = if (state.storageGranted && (state.libraryLoading || !state.libraryReady) && !state.libraryRefreshing && state.albums.isEmpty()) {
                 {
                     AppLoadingStatus(
@@ -87,9 +87,9 @@ fun AlbumsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
             AppAlbumGrid(
                 albums = cards,
                 minColumns = state.albumMinColumns,
-                onAlbumClick = { onAction(MainAction.OpenAlbum(it)) },
+                onAlbumClick = { model.openAlbum(it) },
                 state = gridState,
-                artwork = { card -> albumCover(state.albumCovers[card.id], onAction) },
+                artwork = { card -> albumCover(state.albumCovers[card.id], model) },
             )
         }
     }
@@ -106,22 +106,22 @@ private fun albumCards(albums: List<AlbumGroup>): List<AppAlbumCard> = albums.ma
 }
 
 @Composable
-private fun albumCover(cover: FileItem?, onAction: (MainAction) -> Unit): ImageBitmap? {
+private fun albumCover(cover: FileItem?, model: MainViewModel): ImageBitmap? {
     if (cover == null) return null
     val preview by cover.preview.collectAsStateWithLifecycle()
     DisposableEffect(cover) {
-        onAction(MainAction.LoadFilePreview(cover))
-        onDispose { onAction(MainAction.ReleaseArtwork(cover)) }
+        model.loadFilePreview(cover)
+        onDispose { model.releaseArtwork(cover) }
     }
     return preview.artwork?.asImageBitmap()
 }
 
 @Composable
-fun AlbumTracksPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun AlbumTracksPage(state: MainUiState, model: MainViewModel) {
     AppRefreshableContentList(
         refreshing = state.libraryRefreshing,
         enabled = state.canRefreshLibrary,
-        onRefresh = { onAction(MainAction.RebuildLibrary) },
+        onRefresh = { model.refreshLibrary() },
         compact = true,
         status = if (state.libraryLoading && !state.libraryRefreshing) {
             {
@@ -137,7 +137,7 @@ fun AlbumTracksPage(state: MainUiState, onAction: (MainAction) -> Unit) {
             item { EmptyState(title = "这张专辑里没有歌曲") }
         } else {
             items(state.albumItems, key = { it.document.uri }) { item ->
-                AudioFileRow(item, state, onAction, loadPreviews = true)
+                AudioFileRow(item, state, model, loadPreviews = true)
             }
         }
     }

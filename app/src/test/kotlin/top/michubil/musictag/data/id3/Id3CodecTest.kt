@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import top.michubil.musictag.data.model.CoverImage
 import top.michubil.musictag.data.model.MetadataField
+import top.michubil.musictag.data.model.Mp3TagVersion
 import top.michubil.musictag.data.model.ReleaseDate
 import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.model.ScrapeOptions
@@ -153,6 +154,34 @@ class Id3CodecTest {
         assertArrayEquals(cover, Id3Codec.frontCoverBytes(source))
         assertArrayEquals(audio, source.readBytes().copyOfRange(document.audioOffset.toInt(), source.length().toInt()))
         assertFalse(directory.toFile().listFiles().orEmpty().any { it.extension == "tmp" })
+    }
+
+    @Test
+    fun editingV23UpgradesToV24AndPreservesLegacyDateAndAudio() {
+        val file = directory.resolve("legacy.mp3").toFile()
+        val audio = byteArrayOf(0xFF.toByte(), 0xFB.toByte(), 1, 2, 3)
+        fun legacyFrame(id: String, text: String): ByteArray {
+            val data = byteArrayOf(0) + text.toByteArray(Charsets.ISO_8859_1)
+            val size = data.size
+            return id.toByteArray(Charsets.US_ASCII) +
+                byteArrayOf((size ushr 24).toByte(), (size ushr 16).toByte(), (size ushr 8).toByte(), size.toByte(), 0, 0) + data
+        }
+        val body = legacyFrame("TIT2", "Old") + legacyFrame("TYER", "2024") + legacyFrame("TDAT", "0509")
+        val size = body.size
+        file.writeBytes("ID3".toByteArray(Charsets.US_ASCII) + byteArrayOf(3, 0, 0,
+            (size ushr 21 and 0x7f).toByte(), (size ushr 14 and 0x7f).toByte(),
+            (size ushr 7 and 0x7f).toByte(), (size and 0x7f).toByte()) + body + audio)
+
+        assertEquals(Mp3TagVersion.V23, Id3Codec.read(file).version)
+        SafeMp3Editor().update(file, ScrapedMetadata(title = RemoteValue.Available("New")), ScrapeOptions())
+
+        val upgraded = Id3Codec.read(file)
+        assertEquals(Mp3TagVersion.V24, upgraded.version)
+        assertEquals("New", Id3Codec.readEditableTags(file).text[MetadataField.TITLE])
+        assertEquals("2024-09-05", Id3Codec.readEditableTags(file).text[MetadataField.DATE])
+        assertTrue(upgraded.frames.any { it.id == "TDRC" })
+        assertFalse(upgraded.frames.any { it.id == "TYER" || it.id == "TDAT" })
+        assertArrayEquals(audio, file.readBytes().copyOfRange(upgraded.audioOffset.toInt(), file.length().toInt()))
     }
 
     @Test

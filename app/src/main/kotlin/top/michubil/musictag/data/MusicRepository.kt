@@ -15,6 +15,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import top.michubil.musictag.data.flac.FlacCodec
 import top.michubil.musictag.data.flac.SafeFlacEditor
@@ -41,6 +43,8 @@ import top.michubil.musictag.data.storage.expandDocuments
 import top.michubil.musictag.data.storage.isReservedDocumentName
 import top.michubil.musictag.data.storage.sortDocuments
 import top.michubil.musictag.data.wav.SafeWavEditor
+import top.michubil.musictag.data.network.NetEaseClient
+import top.michubil.musictag.data.network.QqMusicClient
 import top.michubil.musictag.data.wav.WavCodec
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -52,10 +56,10 @@ data class SelectedCover(val image: CoverImage, val artwork: Bitmap)
 
 class MusicRepository(
     context: Context,
-    private val client: MetadataSourcesClient,
-    private val flacEditor: SafeFlacEditor,
-    private val mp3Editor: SafeMp3Editor,
-    private val wavEditor: SafeWavEditor,
+    private val client: MetadataSourcesClient = MetadataSourcesClient(NetEaseClient(), QqMusicClient()),
+    private val flacEditor: SafeFlacEditor = SafeFlacEditor(),
+    private val mp3Editor: SafeMp3Editor = SafeMp3Editor(),
+    private val wavEditor: SafeWavEditor = SafeWavEditor(),
 ) {
     private val appContext = context.applicationContext
     private val storage = SafStorage(context)
@@ -64,10 +68,10 @@ class MusicRepository(
     private val renamer = SafFileRenamer(storage)
     private val networkSlots = Semaphore(4)
     private val committer = SafAudioCommitter(storage, File(context.noBackupFilesDir, "saf-writes"))
-    private val commitGate = SerialGate()
-    private val flacEdit = SerialGate()
-    private val mp3Edit = SerialGate()
-    private val wavEdit = SerialGate()
+    private val commitGate = Mutex()
+    private val flacEdit = Mutex()
+    private val mp3Edit = Mutex()
+    private val wavEdit = Mutex()
     private val workDirectory = File(context.cacheDir, "saf-work").apply {
         check(isDirectory || mkdirs()) { "无法创建音频工作目录" }
         // Only disposable private working copies; recovery records and originals live elsewhere.
@@ -81,7 +85,6 @@ class MusicRepository(
         try {
             return storage.root(treeUri).also {
                 require(it.canCreate) { "此文件夹不允许创建文件，请选择可写入的文件夹" }
-                audioFilter.clear()
                 browseCache.clearTree(treeUri)
             }
         } catch (error: Exception) {
@@ -98,14 +101,13 @@ class MusicRepository(
     fun root(treeUri: String) = storage.root(treeUri)
     suspend fun recover(treeUri: String) {
         if (treeUri in committer.pendingTrees()) clearBrowseCache(treeUri)
-        commitGate.run { committer.recover(treeUri) }
+        commitGate.withLock { committer.recover(treeUri) }
     }
 
     fun directory(treeUri: String, uri: String): MusicDocument =
         storage.document(treeUri, uri).also { require(it.isDirectory) { "目录已不可用" } }
 
     suspend fun clearBrowseCache(treeUri: String) {
-        audioFilter.clear()
         browseCache.clearTree(treeUri)
     }
 
@@ -113,7 +115,6 @@ class MusicRepository(
         browseCache.directory(tree, uri, filters)?.let { it.copy(children = sortDocuments(it.children, sort, descending)) }
 
     private suspend fun invalidateCache(document: MusicDocument) {
-        audioFilter.invalidate(document.uri)
         browseCache.invalidate(document)
     }
 
@@ -418,15 +419,15 @@ class MusicRepository(
         file: File, metadata: ScrapedMetadata, options: ScrapeOptions,
     ) {
         when (document.extension) {
-            "flac" -> flacEdit.run { flacEditor.update(file, metadata, options) }
-            "mp3" -> mp3Edit.run { mp3Editor.update(file, metadata, options) }
-            "wav" -> wavEdit.run { wavEditor.update(file, metadata, options) }
+            "flac" -> flacEdit.withLock { flacEditor.update(file, metadata, options) }
+            "mp3" -> mp3Edit.withLock { mp3Editor.update(file, metadata, options) }
+            "wav" -> wavEdit.withLock { wavEditor.update(file, metadata, options) }
             else -> error("不支持的音频格式")
         }
         currentCoroutineContext().ensureActive()
         // Once committing, finish or reconcile before honoring coroutine cancellation.
         withContext(NonCancellable) {
-            try { commitGate.run { committer.commit(document, parent, originalDigest, file) } }
+            try { commitGate.withLock { committer.commit(document, parent, originalDigest, file) } }
             finally { invalidateCache(document) }
         }
     }

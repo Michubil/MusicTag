@@ -6,7 +6,7 @@ import dev.androidgui.core.designsystem.component.*
 import top.michubil.musictag.data.model.MetadataField
 
 @Composable
-fun TagEditorPage(state: TagEditorState, busy: Boolean, onAction: (MainAction) -> Unit) {
+fun TagEditorPage(state: TagEditorState, busy: Boolean, model: MainViewModel) {
     val draft = state.draft
     val enabled = !busy && !state.loading && !state.coverLoading
     AppContentList {
@@ -31,8 +31,8 @@ fun TagEditorPage(state: TagEditorState, busy: Boolean, onAction: (MainAction) -
                     else -> "暂无封面"
                 },
                 selected = replacing, enabled = enabled && state.count > 0,
-                onSelectedChange = { onAction(MainAction.SetTagSelected(MetadataField.COVER, it)) },
-                onChoose = { onAction(MainAction.ChooseTagCover) }, onRemove = { onAction(MainAction.RemoveTagCover) },
+                onSelectedChange = { model.setTagSelected(MetadataField.COVER, it) },
+                onChoose = { model.chooseTagCover() }, onRemove = { model.removeTagCover() },
             )
         }
         item { AppSupportingText("仅保存勾选字段；留空即清除。") }
@@ -64,8 +64,8 @@ fun TagEditorPage(state: TagEditorState, busy: Boolean, onAction: (MainAction) -
                             MetadataField.LYRICS -> AppTextInputKind.LongMultiline
                             else -> AppTextInputKind.SingleLine
                         },
-                        onSelectedChange = { onAction(MainAction.SetTagSelected(field, it)) },
-                        onValueChange = { onAction(MainAction.SetTagText(field, it)) },
+                        onSelectedChange = { model.setTagSelected(field, it) },
+                        onValueChange = { model.setTagText(field, it) },
                     )
                 }
             }
@@ -75,10 +75,10 @@ fun TagEditorPage(state: TagEditorState, busy: Boolean, onAction: (MainAction) -
 }
 
 @Composable
-fun TagEditorActions(state: TagEditorState, canEditSelection: Boolean, onAction: (MainAction) -> Unit) {
+fun TagEditorActions(state: TagEditorState, canEditSelection: Boolean, model: MainViewModel) {
     AppActionBar(
         primaryLabel = "保存 ${state.count} 个文件", secondaryLabel = "重新读取",
         enabled = canEditSelection && state.canSave, secondaryEnabled = canEditSelection && !state.loading && !state.coverLoading,
-        onPrimary = { onAction(MainAction.SaveTags) }, onSecondary = { onAction(MainAction.ReloadTags) },
+        onPrimary = { model.saveTags() }, onSecondary = { model.reloadTags() },
     )
 }

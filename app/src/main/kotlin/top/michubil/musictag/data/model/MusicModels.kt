@@ -90,7 +90,6 @@ data class ScrapeSources(
 data class ScrapeOptions(
     val policies: Map<MetadataField, FieldPolicy> = MetadataField.entries.associateWith { FieldPolicy() },
     val formatLyricsTimeline: Boolean = true,
-    val mp3TagVersion: Mp3TagVersion = Mp3TagVersion.V24,
     val sources: ScrapeSources = ScrapeSources(),
 )
 

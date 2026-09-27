@@ -230,9 +230,8 @@ object Id3Codec {
         source: File,
         audioOffset: Long,
         paddingSize: Int = 1_024,
-        version: Mp3TagVersion = Mp3TagVersion.V24,
     ) {
-        val tag = renderTag(frames, paddingSize, version)
+        val tag = renderTag(frames, paddingSize)
         output.outputStream().buffered().use { sink ->
             sink.write(tag)
             RandomAccessFile(source, "r").use { sourceFile ->
@@ -250,10 +249,9 @@ object Id3Codec {
     internal fun renderTag(
         frames: List<Id3Frame>,
         paddingSize: Int = 1_024,
-        version: Mp3TagVersion = Mp3TagVersion.V24,
     ): ByteArray {
         require(paddingSize >= 0)
-        val converted = convertId3Frames(frames, version)
+        val converted = convertId3Frames(frames)
         val bodySize = converted.sumOf { FRAME_HEADER_SIZE.toLong() + it.data.size } + paddingSize
         require(bodySize <= MAX_SYNCHSAFE_SIZE) { "ID3 tag is too large" }
         val body = ByteArrayOutputStream(bodySize.toInt()).use { sink ->
@@ -261,7 +259,7 @@ object Id3Codec {
                 require(frame.id.length == 4 && frame.id.all { it in 'A'..'Z' || it in '0'..'9' })
                 require(frame.data.size <= MAX_SYNCHSAFE_SIZE)
                 sink.write(frame.id.toByteArray(Charsets.US_ASCII))
-                sink.write(if (version == Mp3TagVersion.V23) encodeInt32(frame.data.size) else encodeSynchsafe(frame.data.size))
+                sink.write(encodeSynchsafe(frame.data.size))
                 sink.write(frame.flags ushr 8)
                 sink.write(frame.flags)
                 sink.write(frame.data)
@@ -269,16 +267,13 @@ object Id3Codec {
             sink.write(ByteArray(paddingSize))
             sink.toByteArray()
         }
-        // 2.3 inserts escape bytes after measuring frames; 2.4 measures escaped frame payloads.
-        val storedBody = if (version == Mp3TagVersion.V23) addUnsynchronisation(body) else body
-        require(storedBody.size <= MAX_SYNCHSAFE_SIZE) { "ID3 tag is too large" }
-        return ByteArrayOutputStream(HEADER_SIZE + storedBody.size).use { sink ->
+        return ByteArrayOutputStream(HEADER_SIZE + body.size).use { sink ->
             sink.write(ID3_IDENTIFIER)
-            sink.write(version.major)
+            sink.write(Mp3TagVersion.V24.major)
             sink.write(0)
-            sink.write(if (storedBody.size != body.size) UNSYNCHRONISATION else 0)
-            sink.write(encodeSynchsafe(storedBody.size))
-            sink.write(storedBody)
+            sink.write(0)
+            sink.write(encodeSynchsafe(body.size))
+            sink.write(body)
             sink.toByteArray()
         }
     }

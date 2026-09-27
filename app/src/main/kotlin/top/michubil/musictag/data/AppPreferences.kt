@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import top.michubil.musictag.data.model.Mp3TagVersion
 import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.SourceOrder
@@ -24,7 +23,6 @@ data class UserPreferences(
     val recursive: Boolean,
     val storageTreeUri: String?,
     val audioFilters: AudioFilters = AudioFilters(),
-    val mp3TagVersion: Mp3TagVersion = Mp3TagVersion.V24,
     val scrapeSources: ScrapeSources = ScrapeSources(),
 )
 
@@ -65,10 +63,6 @@ class AppPreferences(context: Context) {
         persist { putBoolean("recursive", enabled) }
     }
 
-    fun setMp3TagVersion(version: Mp3TagVersion) {
-        persist { putString("mp3_tag_version", version.name) }
-    }
-
     fun setSourceOrder(group: MetadataGroup, order: SourceOrder) {
         persist { putString("source_${group.name.lowercase(java.util.Locale.ROOT)}", order.name) }
     }
@@ -104,9 +98,6 @@ class AppPreferences(context: Context) {
         albumMinColumns = storage.getInt("album_min_columns", 3).coerceIn(2, 4),
         formatLyricsTimeline = storage.getBoolean("format_lyrics_timeline", true),
         recursive = storage.getBoolean("recursive", false),
-        mp3TagVersion = Mp3TagVersion.entries.firstOrNull {
-            it.name == storage.getString("mp3_tag_version", null)
-        } ?: Mp3TagVersion.V24,
         storageTreeUri = storage.getString("storage_tree_uri", null),
         scrapeSources = ScrapeSources(sourceOrder(MetadataGroup.TAGS), sourceOrder(MetadataGroup.LYRICS), sourceOrder(MetadataGroup.COVER)),
         audioFilters = AudioFilters(

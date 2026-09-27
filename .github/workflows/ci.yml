@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "{0}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Read build configuration
+        id: config
+        run: |
+          . .\scripts\BuildSupport.ps1
+          $settings = getBuildSettings
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "java-version=$($settings.JavaVersion)"
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java-version }}
+
+      - name: Prepare Android SDK
+        run: .\scripts\prepare-ci.ps1
+
+      - name: Check source, tests and lint
+        run: .\scripts\test.ps1 -SdkPath $env:ANDROID_HOME
+
+      - name: Upload failed check reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Check-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            core/designsystem/build/reports/
+            core/designsystem/build/test-results/
+          if-no-files-found: warn
+          retention-days: 14

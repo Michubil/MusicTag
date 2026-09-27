@@ -27,7 +27,7 @@ data class TagDraft(
         }
     }
 
-    fun mutation(mp3TagVersion: Mp3TagVersion = Mp3TagVersion.V24): TagMutation {
+    fun mutation(): TagMutation {
         require(changed.isNotEmpty()) { "请选择要修改的字段" }
         fun string(field: MetadataField): RemoteValue<String> = if (field !in changed) RemoteValue.Unavailable
             else text[field]?.trim()?.takeIf(String::isNotEmpty)?.let { RemoteValue.Available(it) } ?: RemoteValue.ConfirmedAbsent
@@ -44,7 +44,7 @@ data class TagDraft(
         )
         return TagMutation(metadata, ScrapeOptions(MetadataField.entries.associateWith {
             FieldPolicy(enabled = it in changed, overwrite = true)
-        }, formatLyricsTimeline = false, mp3TagVersion = mp3TagVersion))
+        }, formatLyricsTimeline = false))
     }
 }
 

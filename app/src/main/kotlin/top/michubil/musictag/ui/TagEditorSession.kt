@@ -12,7 +12,6 @@ import top.michubil.musictag.data.TagEditorContent
 import top.michubil.musictag.data.edit.TagDraft
 import top.michubil.musictag.data.edit.TagEditSource
 import top.michubil.musictag.data.model.MetadataField
-import top.michubil.musictag.data.model.Mp3TagVersion
 import top.michubil.musictag.data.storage.MusicDocument
 
 /** Owns only editor reads and drafts. It cannot change authorization, navigation or operation busy state. */
@@ -98,10 +97,10 @@ internal class TagEditorSession(
         }
     }
 
-    fun prepareSave(version: Mp3TagVersion): TagSaveRequest? {
+    fun prepareSave(): TagSaveRequest? {
         val current = state()
         if (!current.canSave || sources.isEmpty()) return null
-        val mutation = runCatching { current.draft.mutation(version) }.getOrElse {
+        val mutation = runCatching { current.draft.mutation() }.getOrElse {
             publish(current.copy(validation = it.userMessage()))
             return null
         }

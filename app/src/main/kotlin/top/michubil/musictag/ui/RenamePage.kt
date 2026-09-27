@@ -8,7 +8,7 @@ import top.michubil.musictag.data.rename.RenamePreset
 import top.michubil.musictag.data.rename.RenameTag
 
 @Composable
-fun RenamePage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun RenamePage(state: MainUiState, model: MainViewModel) {
     AppContentList {
         item { AppSupportingText("已选择 ${state.selected.size} 项 · 使用文件现有标签，保留扩展名") }
         item {
@@ -16,12 +16,12 @@ fun RenamePage(state: MainUiState, onAction: (MainAction) -> Unit) {
                 AppChoiceGrid(
                     options = RenamePreset.entries.map { AppChoiceOption(it, it.pattern.ifEmpty { it.label }) },
                     selectedValue = state.renamePreset, enabled = !state.busy,
-                    onSelect = { onAction(MainAction.SetRenamePreset(it)) },
+                    onSelect = { model.setRenamePreset(it) },
                 )
                 if (state.renamePreset == RenamePreset.CUSTOM) {
                     AppTextField(
                         value = state.renameCustomPattern, label = "自定义模板，例如 @1-@2",
-                        enabled = !state.busy, onValueChange = { onAction(MainAction.SetRenamePattern(it)) },
+                        enabled = !state.busy, onValueChange = { model.setRenamePattern(it) },
                     )
                 }
                 AppExpandableSection(title = "参数说明") {
@@ -54,11 +54,11 @@ fun RenamePage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun RenameActions(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun RenameActions(state: MainUiState, model: MainViewModel) {
     AppActionBar(
         primaryLabel = "重命名 ${state.renameEntries.count { it.willRename }} 个文件",
         secondaryLabel = "重新读取",
         enabled = state.canRename, secondaryEnabled = state.canEditSelection && !state.renameLoading,
-        onPrimary = { onAction(MainAction.StartRenaming) }, onSecondary = { onAction(MainAction.ReloadRename) },
+        onPrimary = { model.startRenaming() }, onSecondary = { model.reloadRename() },
     )
 }
