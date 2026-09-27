@@ -4,7 +4,7 @@ GitHub Actions 是 APK 交付入口：`.github/workflows/ci.yml` 检查 PR，`.g
 
 ## GitHub Actions
 
-- PR：`ci.yml` 的 `build` 检查运行 GUI/SAF 边界、两个模块的单元测试和 Lint；不使用 Release 密钥或打包。`main` 仅接收与最新主线同步、且 `build` 通过的 PR。
+- PR：`ci.yml` 的 `build` 检查运行 SAF 边界、两个模块的单元测试和 Lint；不使用 Release 密钥或打包。`main` 仅接收与最新主线同步、且 `build` 通过的 PR。
 - 已确定随同一版本交付的功能、修复和版本号优先用一个职责书签、一个 PR 合入。需要提前合入或独立审查时，各 PR 仍须通过检查。
 - 标签：仅推送 `v*` 标签触发 `release.yml`，标签须等于 `v` 加 Gradle 的 `versionName`，且指向 `main` 历史中的提交。工作流对标签提交重新运行测试与 Lint，再恢复原密钥、构建并验包，成功后创建 GitHub Release 并附加 APK。
 - 权限与产物：构建 job 只读，publish job 才有 Release 写权限；APK artifact 保留 14 天。检查失败时上传 `Check-reports`。已有 Release 缺少同名 APK 时补传，已有同名 APK 时停止并要求人工检查。
@@ -39,7 +39,7 @@ pwsh -NoProfile -File .\scripts\release.ps1 -Version 1.3.0
 
 | 脚本 | 职责 |
 | --- | --- |
-| `.\scripts\test.ps1` | 源码边界、单元测试、Lint 和报告汇总，不需要 Release 密钥 |
+| `.\scripts\test.ps1` | SAF 边界、单元测试、Lint 和报告汇总，不需要 Release 密钥 |
 | `.\scripts\build-apk.ps1` | Release 构建与验包，检查由工作流前一步执行，不重复运行测试 |
 | `.\scripts\verify-apk.ps1` | 独立检查版本、签名及 V2、权限、ARM64、ZIP 对齐、许可和敏感文件排除 |
 
