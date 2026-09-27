@@ -17,14 +17,7 @@ if ($PSBoundParameters.ContainsKey('Bump') -eq $PSBoundParameters.ContainsKey('V
     throw 'Specify exactly one of -Bump or -Version.'
 }
 
-function invokeReleaseCommand {
-    param([string]$Executable, [string[]]$Arguments)
-    $result = & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$Executable $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
-    return $result
-}
-
-foreach ($tool in @('pwsh', 'jj', 'git', 'gh')) {
+foreach ($tool in @('jj', 'gh')) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool is unavailable: $tool" }
 }
 $settings = getBuildSettings
@@ -49,23 +42,25 @@ for ($index = 0; $index -lt 3; $index++) {
 $nextCode = [int]$settings.VersionCode + 1
 $tag = "v$target"
 
-$bookmarks = @(invokeReleaseCommand jj @('log', '-r', '@', '--no-graph', '-T',
+$bookmarks = @(invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T',
     'bookmarks.map(|b| b.name()).join("\n") ++ "\n"') | Where-Object { $_ })
 if ($bookmarks.Count -ne 1 -or $bookmarks[0] -cnotmatch '^(fix|feat)/[^/]+$') {
     throw 'Current change must have exactly one fix/* or feat/* bookmark.'
 }
 $bookmark = $bookmarks[0]
-$description = ((invokeReleaseCommand jj @('log', '-r', '@', '--no-graph', '-T', 'description.first_line()')) -join '').Trim()
-$conflict = ((invokeReleaseCommand jj @('log', '-r', '@', '--no-graph', '-T', 'conflict')) -join '').Trim()
+$description = ((invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T', 'description.first_line()')) -join '').Trim()
+$conflict = ((invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T', 'conflict')) -join '').Trim()
 if (-not $description -or $conflict -ne 'false') { throw 'Current bookmarked change needs a description and no conflicts.' }
 if ($description -match '^chore\(release\): prepare v') { throw 'This change already prepares a release; inspect it before starting another.' }
-$candidate = ((invokeReleaseCommand jj @('log', '-r', '@', '--no-graph', '-T', 'commit_id')) -join '').Trim()
-$onMain = @(invokeReleaseCommand jj @('log', '-r', '@ & ancestors(main@origin)', '--no-graph', '-T', 'commit_id'))
+$candidate = ((invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T', 'commit_id')) -join '').Trim()
+$onMain = @(invokeCheckedNative jj @('log', '-r', '@ & ancestors(main@origin)', '--no-graph', '-T', 'commit_id'))
 if ($onMain.Count -gt 0) { throw 'Current bookmark already points into main.' }
-$base = @(invokeReleaseCommand jj @('log', '-r', 'main@origin & ancestors(@)', '--no-graph', '-T', 'commit_id'))
-if ($base.Count -eq 0) { throw 'Current change is not based on the fetched main history.' }
-$knownTags = @(invokeReleaseCommand jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
-if ($tag -in $knownTags) { throw "$tag already exists; inspect it before releasing." }
+if ($DryRun) {
+    $base = @(invokeCheckedNative jj @('log', '-r', 'main@origin & ancestors(@)', '--no-graph', '-T', 'commit_id'))
+    if ($base.Count -eq 0) { throw 'Current change is not based on the fetched main history.' }
+    $knownTags = @(invokeCheckedNative jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
+    if ($tag -in $knownTags) { throw "$tag already exists; inspect it before releasing." }
+}
 
 Write-Output "Current version : $($settings.Version) ($($settings.VersionCode))"
 Write-Output "Target version  : $target ($nextCode)"
@@ -75,7 +70,7 @@ if ($DryRun) {
     return
 }
 
-$origin = @(invokeReleaseCommand jj @('git', 'remote', 'list') | Where-Object { $_ -match '^origin\s+' })
+$origin = @(invokeCheckedNative jj @('git', 'remote', 'list') | Where-Object { $_ -match '^origin\s+' })
 if ($origin.Count -ne 1) {
     throw 'Jujutsu has no origin remote. Configure the repository remote before releasing.'
 }
@@ -86,12 +81,12 @@ if ($originUrl -notmatch '^(?:https://github\.com/|git@github\.com:)([^/]+)/([^/
 $repository = "$($Matches[1])/$($Matches[2])"
 & gh auth status
 if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not authenticated; run gh auth login before releasing.' }
-$mergeOptions = ((invokeReleaseCommand gh @('repo', 'view', $repository, '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed')) -join [Environment]::NewLine) | ConvertFrom-Json
+$mergeOptions = ((invokeCheckedNative gh @('repo', 'view', $repository, '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed')) -join [Environment]::NewLine) | ConvertFrom-Json
 $mergeMethod = if ($mergeOptions.squashMergeAllowed) { '--squash' } elseif ($mergeOptions.mergeCommitAllowed) { '--merge' } elseif ($mergeOptions.rebaseMergeAllowed) { '--rebase' } else { throw 'Repository has no supported PR merge method.' }
-invokeReleaseCommand jj @('git', 'fetch', '--remote', 'origin') | Out-Null
-$latestBase = @(invokeReleaseCommand jj @('log', '-r', 'main@origin & ancestors(@)', '--no-graph', '-T', 'commit_id'))
+invokeCheckedNative jj @('git', 'fetch', '--remote', 'origin') | Out-Null
+$latestBase = @(invokeCheckedNative jj @('log', '-r', 'main@origin & ancestors(@)', '--no-graph', '-T', 'commit_id'))
 if ($latestBase.Count -ne 1) { throw 'Candidate is behind or diverged from origin/main; synchronize it before releasing.' }
-$knownTags = @(invokeReleaseCommand jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
+$knownTags = @(invokeCheckedNative jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
 if ($tag -in $knownTags) { throw "$tag already exists; inspect it before releasing." }
 
 $gradleFile = Join-Path $settings.Root 'app\build.gradle.kts'
@@ -102,7 +97,7 @@ if ([regex]::Matches($source, $codePattern).Count -ne 1 -or [regex]::Matches($so
     throw 'Expected exactly one versionCode and versionName assignment in app/build.gradle.kts.'
 }
 Write-Output '[1/8] Preparing Gradle version'
-invokeReleaseCommand jj @('new', '@', '-m', "chore(release): prepare $tag") | Out-Null
+invokeCheckedNative jj @('new', '@', '-m', "chore(release): prepare $tag") | Out-Null
 $source = [regex]::Replace($source, $codePattern, { param($m) "$($m.Groups[1].Value)$nextCode$($m.Groups[2].Value)" })
 $source = [regex]::Replace($source, $namePattern, { param($m) $m.Groups[1].Value + '"' + $target + '"' + $m.Groups[2].Value })
 [IO.File]::WriteAllText($gradleFile, $source, [Text.UTF8Encoding]::new($false))
@@ -110,23 +105,24 @@ $updated = getBuildSettings
 if ([int]$updated.VersionCode -ne $nextCode -or $updated.Version -cne $target) {
     throw 'Gradle version update did not produce the requested values.'
 }
-invokeReleaseCommand jj @('bookmark', 'move', $bookmark, '--to', '@') | Out-Null
+invokeCheckedNative jj @('bookmark', 'move', $bookmark, '--to', '@') | Out-Null
 
 Write-Output '[2/8] Running local checks'
-invokeReleaseCommand pwsh @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test.ps1'))
-$head = ((invokeReleaseCommand jj @('log', '-r', '@', '--no-graph', '-T', 'commit_id')) -join '').Trim()
+& "$PSScriptRoot\test.ps1"
+if (-not $?) { throw 'Local checks failed; no branch or tag was pushed.' }
+$head = ((invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T', 'commit_id')) -join '').Trim()
 
 Write-Output "[3/8] Pushing $bookmark"
-invokeReleaseCommand jj @('git', 'push', '--remote', 'origin', '--bookmark', $bookmark) | Out-Null
+invokeCheckedNative jj @('git', 'push', '--remote', 'origin', '--bookmark', $bookmark) | Out-Null
 
 Write-Output '[4/8] Creating or reusing PR'
-$prs = @(invokeReleaseCommand gh @('pr', 'list', '--repo', $repository, '--head', $bookmark, '--base', 'main',
+$prs = @(invokeCheckedNative gh @('pr', 'list', '--repo', $repository, '--head', $bookmark, '--base', 'main',
     '--state', 'open', '--json', 'number,url', '--jq', '.[] | "\(.number) \(.url)"'))
 if ($prs.Count -gt 1) { throw "Multiple open PRs target main from $bookmark." }
 if ($prs.Count -eq 0) {
-    $title = ((invokeReleaseCommand jj @('log', '-r', '@-', '--no-graph', '-T', 'description.first_line()')) -join '').Trim()
+    $title = ((invokeCheckedNative jj @('log', '-r', '@-', '--no-graph', '-T', 'description.first_line()')) -join '').Trim()
     if (-not $title) { $title = $description }
-    $prUrl = ((invokeReleaseCommand gh @('pr', 'create', '--repo', $repository, '--head', $bookmark, '--base', 'main',
+    $prUrl = ((invokeCheckedNative gh @('pr', 'create', '--repo', $repository, '--head', $bookmark, '--base', 'main',
         '--title', $title, '--body', "Includes the verified $tag version update.")) -join '').Trim()
     $prNumber = [int](($prUrl -split '/')[-1])
 } else {
@@ -134,18 +130,18 @@ if ($prs.Count -eq 0) {
     $prUrl = ($prs[0] -split ' ')[1]
 }
 if (-not $prNumber) { throw 'Could not identify the release candidate PR.' }
-$pr = ((invokeReleaseCommand gh @('pr', 'view', "$prNumber", '--repo', $repository, '--json',
+$pr = ((invokeCheckedNative gh @('pr', 'view', "$prNumber", '--repo', $repository, '--json',
     'headRefOid,baseRefName', '--jq', '.')) -join [Environment]::NewLine) | ConvertFrom-Json
 if ($pr.baseRefName -cne 'main' -or $pr.headRefOid -cne $head) {
     throw 'The PR head or base differs from the verified release candidate.'
 }
-invokeReleaseCommand gh @('pr', 'merge', "$prNumber", '--repo', $repository, '--auto', $mergeMethod,
+invokeCheckedNative gh @('pr', 'merge', "$prNumber", '--repo', $repository, '--auto', $mergeMethod,
     '--match-head-commit', $head) | Out-Null
 
 Write-Output "[5/8] Waiting for PR #$prNumber to merge"
 $deadline = (Get-Date).AddMinutes(30)
 do {
-    $pr = ((invokeReleaseCommand gh @('pr', 'view', "$prNumber", '--repo', $repository, '--json',
+    $pr = ((invokeCheckedNative gh @('pr', 'view', "$prNumber", '--repo', $repository, '--json',
         'state,mergeCommit,mergeStateStatus,reviewDecision', '--jq', '.')) -join [Environment]::NewLine) | ConvertFrom-Json
     if ($pr.state -eq 'MERGED') { break }
     if ($pr.state -ne 'OPEN') { throw "PR #$prNumber closed without merging: $prUrl" }
@@ -159,28 +155,28 @@ do {
 if (-not $pr.mergeCommit.oid) { throw 'Merged PR has no merge commit ID.' }
 
 Write-Output '[6/8] Fetching merged main'
-invokeReleaseCommand jj @('git', 'fetch', '--remote', 'origin') | Out-Null
-$merged = @(invokeReleaseCommand jj @('log', '-r', "$($pr.mergeCommit.oid) & ancestors(main@origin)",
+invokeCheckedNative jj @('git', 'fetch', '--remote', 'origin') | Out-Null
+$merged = @(invokeCheckedNative jj @('log', '-r', "$($pr.mergeCommit.oid) & ancestors(main@origin)",
     '--no-graph', '-T', 'commit_id'))
 if ($merged.Count -ne 1) { throw 'Fetched main does not contain the merged PR commit.' }
-$mainFile = (invokeReleaseCommand jj @('file', 'show', '-r', 'main@origin', 'app/build.gradle.kts')) -join [Environment]::NewLine
+$mainFile = (invokeCheckedNative jj @('file', 'show', '-r', 'main@origin', 'app/build.gradle.kts')) -join [Environment]::NewLine
 $expectedName = '(?m)^\s*versionName\s*=\s*"' + [regex]::Escape($target) + '"\s*$'
 $expectedCode = "(?m)^\s*versionCode\s*=\s*$nextCode\s*$"
 if ($mainFile -notmatch $expectedName -or $mainFile -notmatch $expectedCode) {
     throw 'Merged main has a different versionName or versionCode.'
 }
-$localMain = ((invokeReleaseCommand jj @('log', '-r', 'main', '--no-graph', '-T', 'commit_id')) -join '').Trim()
-$remoteMain = ((invokeReleaseCommand jj @('log', '-r', 'main@origin', '--no-graph', '-T', 'commit_id')) -join '').Trim()
+$localMain = ((invokeCheckedNative jj @('log', '-r', 'main', '--no-graph', '-T', 'commit_id')) -join '').Trim()
+$remoteMain = ((invokeCheckedNative jj @('log', '-r', 'main@origin', '--no-graph', '-T', 'commit_id')) -join '').Trim()
 if ($localMain -ne $remoteMain) {
-    $oldMain = @(invokeReleaseCommand jj @('log', '-r', 'main & ancestors(main@origin)', '--no-graph', '-T', 'commit_id'))
+    $oldMain = @(invokeCheckedNative jj @('log', '-r', 'main & ancestors(main@origin)', '--no-graph', '-T', 'commit_id'))
     if ($oldMain.Count -ne 1) { throw 'Local main diverged from fetched origin/main; inspect before tagging.' }
-    invokeReleaseCommand jj @('bookmark', 'move', 'main', '--to', 'main@origin') | Out-Null
+    invokeCheckedNative jj @('bookmark', 'move', 'main', '--to', 'main@origin') | Out-Null
 }
-$knownTags = @(invokeReleaseCommand jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
+$knownTags = @(invokeCheckedNative jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
 if ($tag -in $knownTags) { throw "$tag already exists; inspect it before releasing." }
 
 Write-Output "[7/8] Creating $tag"
-invokeReleaseCommand jj @('tag', 'set', $tag, '-r', 'main') | Out-Null
+invokeCheckedNative jj @('tag', 'set', $tag, '-r', 'main') | Out-Null
 Write-Output '[8/8] Pushing release tag'
-invokeReleaseCommand jj @('git', 'push', '--remote', 'origin', '--tag', $tag) | Out-Null
+invokeCheckedNative jj @('git', 'push', '--remote', 'origin', '--tag', $tag) | Out-Null
 Write-Output "Release trigger complete: $tag"
