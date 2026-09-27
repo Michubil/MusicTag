@@ -6,10 +6,12 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 
 - PR：脚本语法、GUI/SAF 边界、两个模块的单元测试与 Lint。`main` 更新不再触发重复检查。
 - `main` 必须通过 PR 合并，GitHub Actions 的 `build` 检查通过且分支与主线保持最新后才允许合并，管理员同样受约束。
+- 同一批已确定随一个版本发布的功能、修复和版本号，在候选分支上分别提交，通常用一个 PR 合入 `main`：PR 检查一次，发布 Release 后按当前工作流再次检查并签名打包。不要把已准备好的功能先作为一个 PR 合入，再仅为 `versionCode`、`versionName` 另开一个 PR。若功能必须提前合入、需要独立审查或主线发生变化，仍为各 PR 等待最新的必需检查；不能为减少运行次数跳过保护规则。
 - jj 书签推送后对应 GitHub 分支；重写同一书签并推送会更新 PR，取消该 PR 的过期检查。每次 Release 发布独立运行。
 - 仅 GitHub Release 的 `published` 事件触发打包（包含预发布）；检查通过后，构建并验证签名 APK。推送分支、推送标签、保存 Release 草稿均不打包，也不提供手动 Run workflow 入口。
-- 标签须等于 `v` 加 Gradle 的 `versionName`，且指向已合入 `main` 的提交；标签不会修改版本，发布前通过普通 PR 更新 `versionCode` 与 `versionName`，无需专用发布分支。
-- 版本 PR 合并后，执行 `jj git fetch --remote origin` 同步 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`。最后在 GitHub Releases 选择该标签并点击 Publish release，触发打包；将占位符替换为实际版本。
+- 标签须等于 `v` 加 Gradle 的 `versionName`，且指向已合入 `main` 的提交；标签不会修改版本。发布前在候选 PR 中更新 `versionCode` 与 `versionName`，无需在功能 PR 合入后另开仅含版本号的 PR。
+- 包含版本号的 PR 合并后，执行 `jj git fetch --remote origin` 同步 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`。最后在 GitHub Releases 选择该标签并点击 Publish release，触发打包；将占位符替换为实际版本。
+- 发布说明以上一个实际交付的 Release 所指向的提交为起点（不含）、本次 Release 所指向的提交为终点（含），核对该范围的提交和 PR。中间只更新了版本号、未单独交付 Release 的改动也属于本次范围；日志用 `feat`、`fix` 等类型归类，不为中间版本号另设章节。若历史 Release 或标签缺失，先核对实际发布范围，不凭版本号猜测。
 - 发布构建成功后，APK 自动附加到触发本次构建的 GitHub Release。上传任务单独获得 Release 写权限，PR 与构建任务保持只读；重复执行时跳过内容相同的附件，同名不同内容则报错。Actions 中也保留 APK 和 `Check-reports` 14 天，不自动创建新的 Release。
 
 使用 GitHub 托管的 Windows runner 和 PowerShell 7.6+。Actions checkout 获取本次事件的源码，PR 检查合并结果；不在 runner 上初始化 jj 仓库。Java、Android SDK 与 Build Tools 的版本由 `app/build.gradle.kts` 读取，依赖由 Gradle 管理。`prepare-ci.ps1` 只在 GitHub runner 上安装所需 SDK，不修改本机环境。

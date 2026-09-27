@@ -20,7 +20,7 @@ object AppDimensions {
     val MinimumTouchTarget = 48.dp
     val ScreenHorizontalPadding = 16.dp
     val ContentVerticalPadding = 12.dp
-    val NavigationBarHeight = 80.dp
+    val NavigationBarHeight = 64.dp
     val TopBarMinHeight = 64.dp
     val DialogCornerRadius = 28.dp
     val DialogMaxWidth = 560.dp
