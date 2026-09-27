@@ -6,7 +6,7 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 
 - PR：脚本语法、GUI/SAF 边界、两个模块的单元测试与 Lint。`main` 更新不再触发重复检查。
 - `main` 必须通过 PR 合并，GitHub Actions 的 `build` 检查通过且分支与主线保持最新后才允许合并，管理员同样受约束。
-- 同一批已确定随一个版本发布的功能、修复和版本号，在候选分支上分别提交，通常用一个 PR 合入 `main`：PR 检查一次，发布 Release 后按当前工作流再次检查并签名打包。不要把已准备好的功能先作为一个 PR 合入，再仅为 `versionCode`、`versionName` 另开一个 PR。若功能必须提前合入、需要独立审查或主线发生变化，仍为各 PR 等待最新的必需检查；不能为减少运行次数跳过保护规则。
+- 同一批已确定随一个版本发布的功能、修复和版本号，在选定的 `fix/*` 或 `feat/*` 职责分支上分别提交，不另建 `release/*` 分支，通常用一个 PR 合入 `main`：PR 检查一次，发布 Release 后按当前工作流再次检查并签名打包。不要把已准备好的功能先作为一个 PR 合入，再仅为 `versionCode`、`versionName` 另开一个 PR。若功能必须提前合入、需要独立审查或主线发生变化，仍为各 PR 等待最新的必需检查；不能为减少运行次数跳过保护规则。
 - jj 书签推送后对应 GitHub 分支；重写同一书签并推送会更新 PR，取消该 PR 的过期检查。每次 Release 发布独立运行。
 - 仅 GitHub Release 的 `published` 事件触发打包（包含预发布）；检查通过后，构建并验证签名 APK。推送分支、推送标签、保存 Release 草稿均不打包，也不提供手动 Run workflow 入口。
 - 标签须等于 `v` 加 Gradle 的 `versionName`，且指向已合入 `main` 的提交；标签不会修改版本。发布前在候选 PR 中更新 `versionCode` 与 `versionName`，无需在功能 PR 合入后另开仅含版本号的 PR。

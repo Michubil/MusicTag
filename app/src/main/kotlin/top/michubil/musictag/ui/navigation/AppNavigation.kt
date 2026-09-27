@@ -320,6 +320,8 @@ private fun AppNavigation(
             exitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, fileWorkRoot = fileWorkRoot)) },
             popEnterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
             popExitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
+            predictivePopEnterTransition = { _ -> transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
+            predictivePopExitTransition = { _ -> transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
         ) {
             composable(Routes.Search) {
                 LaunchedEffect(Unit) { model.onAction(MainAction.ActivateSearch) }
