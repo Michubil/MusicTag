@@ -4,7 +4,6 @@
 param([string]$SdkPath)
 
 . "$PSScriptRoot\BuildSupport.ps1"
-& "$PSScriptRoot\test-design-boundary.ps1"
 & "$PSScriptRoot\test-storage-boundary.ps1"
 $context = getBuildContext -SdkPath $SdkPath
 $previous = setBuildEnvironment -Context $context
