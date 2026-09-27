@@ -11,6 +11,8 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 45
+    env:
+      ACOUSTID_CLIENT_KEY: ${{ secrets.ACOUSTID_CLIENT_KEY }}
     outputs:
       version: ${{ steps.config.outputs.version }}
     defaults:
@@ -31,6 +33,9 @@ jobs:
           $settings = getBuildSettings
           if ($env:GITHUB_REF_NAME -cne "v$($settings.Version)") {
             throw 'The tag must match versionName in app/build.gradle.kts.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ACOUSTID_CLIENT_KEY)) {
+            throw 'Set the ACOUSTID_CLIENT_KEY repository secret before releasing audio fingerprint lookup.'
           }
           git merge-base --is-ancestor HEAD origin/main
           if ($LASTEXITCODE -ne 0) { throw 'The Release tag must point to a commit on main.' }

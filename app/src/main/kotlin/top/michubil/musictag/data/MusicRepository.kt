@@ -19,16 +19,25 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import top.michubil.musictag.data.flac.FlacCodec
+import top.michubil.musictag.data.fingerprint.AudioFingerprinter
 import top.michubil.musictag.data.flac.SafeFlacEditor
 import top.michubil.musictag.data.id3.Id3Codec
 import top.michubil.musictag.data.id3.SafeMp3Editor
 import top.michubil.musictag.data.lyrics.LyricsCodec
+import top.michubil.musictag.data.match.CandidateSearch
+import top.michubil.musictag.data.match.MatchSession
+import top.michubil.musictag.data.match.ScrapeDisposition
+import top.michubil.musictag.data.match.ScrapeKind
+import top.michubil.musictag.data.match.UserQuery
+import top.michubil.musictag.data.match.planWrite
+import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.LocalTrack
-import top.michubil.musictag.data.model.MatchResult
 import top.michubil.musictag.data.model.ScrapeOptions
 import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.map
 import top.michubil.musictag.data.network.MetadataSourcesClient
+import top.michubil.musictag.data.network.AcoustIdClient
+import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.rename.RenameEntry
 import top.michubil.musictag.data.rename.RenameInputs
@@ -62,6 +71,16 @@ class MusicRepository(
     private val wavEditor: SafeWavEditor = SafeWavEditor(),
 ) {
     private val appContext = context.applicationContext
+    private val acoustId = AcoustIdClient()
+
+    suspend fun recognizeAudio(document: MusicDocument): List<FingerprintSuggestion> {
+        check(acoustId.isConfigured) { "未配置 AcoustID 应用 key，请先注册并在构建时设置 ACOUSTID_CLIENT_KEY" }
+        val fingerprint = withLocalCopy(document) { file ->
+            val duration = runCatching { readLocalTrack(file).durationMs }.getOrNull()
+            AudioFingerprinter.calculate(file, duration)
+        }
+        return networkSlots.withPermit { acoustId.lookup(fingerprint) }
+    }
     private val storage = SafStorage(context)
     private val browseCache = MusicCache(context)
     private val audioFilter = AudioFileFilter(probe = { probeDuration(it) })
@@ -314,9 +333,17 @@ class MusicRepository(
     private fun tagReadFailure(error: Throwable): String =
         error.message?.takeIf(String::isNotBlank) ?: "无法读取标签"
 
-    suspend fun candidates(document: MusicDocument, options: ScrapeOptions): List<MatchResult> {
+    fun blockedMessage(options: ScrapeOptions): String? = client.blockedMessage(options)
+
+    suspend fun candidates(
+        document: MusicDocument,
+        options: ScrapeOptions,
+        query: UserQuery? = null,
+        prior: CandidateSearch? = null,
+        retry: MusicSource? = null,
+    ): CandidateSearch {
         val track = withLocalCopy(document, previewOnly = true) { trackForMatching(document, it) }
-        return networkSlots.withPermit { client.candidates(track, options) }
+        return networkSlots.withPermit { client.candidates(track, options, query, prior, retry) }
     }
 
     suspend fun readRenameInputs(
@@ -399,18 +426,38 @@ class MusicRepository(
         }
     }
 
-    suspend fun scrape(document: MusicDocument, options: ScrapeOptions, forcedCandidate: SongCandidate?) {
+    suspend fun scrape(
+        document: MusicDocument,
+        options: ScrapeOptions,
+        forcedCandidate: SongCandidate?,
+        session: MatchSession? = null,
+    ): ScrapeDisposition {
+        if (session != null && !session.sameFile(document)) {
+            return ScrapeDisposition(ScrapeKind.REVIEW, "文件已变化，请重新匹配")
+        }
         val parent = directory(document.treeUri, requireNotNull(document.parentUri))
         require(canSafelyReplace(document, parent)) {
             "${document.name}：提供方不支持安全替换所需的创建、重命名和删除操作"
         }
-        withDigestedLocalCopy(document) { file, originalDigest ->
+        return withDigestedLocalCopy(document) { file, originalDigest ->
             val track = trackForMatching(document, file)
-            val downloaded = networkSlots.withPermit { client.metadata(track, options, forcedCandidate) }
-            val metadata = if (options.formatLyricsTimeline) {
-                downloaded.copy(lyrics = downloaded.lyrics.map(LyricsCodec::formatTimeline))
-            } else downloaded
-            editAndCommit(document, parent, originalDigest, file, metadata, options)
+            val reusable = session?.takeIf { it.sources == options.sources && it.policies == options.policies }
+            val prepared = networkSlots.withPermit {
+                client.metadata(track, options, forcedCandidate, reusable?.search, reusable?.query)
+            }
+            if (prepared.disposition.kind != ScrapeKind.COMPLETE && prepared.disposition.kind != ScrapeKind.PARTIAL) {
+                return@withDigestedLocalCopy prepared.disposition
+            }
+            val formatted = if (options.formatLyricsTimeline) {
+                prepared.metadata.copy(lyrics = prepared.metadata.lyrics.map(LyricsCodec::formatTimeline))
+            } else prepared.metadata
+            val existing = AudioMetadataReader.readEditor(file, includeArtwork = false).tags
+            val plan = planWrite(formatted, existing.text, existing.hasCover, options, prepared.kept)
+            if (plan.disposition.kind != ScrapeKind.COMPLETE && plan.disposition.kind != ScrapeKind.PARTIAL) {
+                return@withDigestedLocalCopy plan.disposition
+            }
+            editAndCommit(document, parent, originalDigest, file, plan.metadata, options)
+            plan.disposition
         }
     }
 

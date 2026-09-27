@@ -9,7 +9,8 @@ $context = getBuildContext -SdkPath $SdkPath
 $previous = setBuildEnvironment -Context $context
 Push-Location -LiteralPath $context.Root
 try {
-    $tasks = @(':app:testDebugUnitTest', ':core:designsystem:testDebugUnitTest', ':app:lint', ':core:designsystem:lint')
+    $tasks = @(':app:testDebugUnitTest', ':core:designsystem:testDebugUnitTest',
+        ':app:externalNativeBuildDebug', ':app:lint', ':core:designsystem:lint')
     invokeCheckedNative -Executable (Join-Path $context.Root 'gradlew.ps1') -Arguments $tasks
     writeTestSummary -Context $context
 } finally {

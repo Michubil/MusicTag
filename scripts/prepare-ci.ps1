@@ -15,5 +15,6 @@ $sdkArguments = @("--sdk_root=$SdkPath")
 @('y') * 100 | & $manager @sdkArguments '--licenses'
 if ($LASTEXITCODE -ne 0) { throw 'Android SDK license acceptance failed.' }
 invokeCheckedNative -Executable $manager -Arguments ($sdkArguments + @(
-    "platforms;android-$($settings.CompileSdk).0", "build-tools;$($settings.BuildToolsVersion)"
+    "platforms;android-$($settings.CompileSdk).0", "build-tools;$($settings.BuildToolsVersion)",
+    "ndk;$($settings.NdkVersion)", "cmake;$($settings.CmakeVersion)"
 ))

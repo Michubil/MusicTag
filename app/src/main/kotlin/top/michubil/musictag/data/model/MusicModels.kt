@@ -60,12 +60,16 @@ enum class Mp3TagVersion(val major: Int, val label: String) {
 
 enum class MusicSource(val label: String) { NETEASE("网易云音乐"), QQ("QQ 音乐") }
 
-enum class SourceOrder(val label: String, val sources: List<MusicSource>) {
-    NETEASE_FIRST("双源搜索，网易云优先", listOf(MusicSource.NETEASE, MusicSource.QQ)),
-    QQ_FIRST("双源搜索，QQ 音乐优先", listOf(MusicSource.QQ, MusicSource.NETEASE)),
-    NETEASE_ONLY("仅网易云音乐", listOf(MusicSource.NETEASE)),
-    QQ_ONLY("仅 QQ 音乐", listOf(MusicSource.QQ)),
+/** List position is the source order. `enabled` is the only other stored state. */
+data class SourceSelection(val source: MusicSource, val enabled: Boolean)
+
+fun sourceSelections(vararg enabled: MusicSource): List<SourceSelection> {
+    val enabledSources = enabled.toList()
+    val disabled = MusicSource.entries.filter { it !in enabledSources }
+    return enabledSources.map { SourceSelection(it, enabled = true) } + disabled.map { SourceSelection(it, enabled = false) }
 }
+
+fun defaultSourceSelections(): List<SourceSelection> = sourceSelections(MusicSource.NETEASE, MusicSource.QQ)
 
 enum class MetadataGroup(val label: String, val fields: Set<MetadataField>) {
     TAGS("组合源", setOf(MetadataField.TITLE, MetadataField.ARTISTS, MetadataField.ALBUM,
@@ -75,16 +79,23 @@ enum class MetadataGroup(val label: String, val fields: Set<MetadataField>) {
 }
 
 data class ScrapeSources(
-    val tags: SourceOrder = SourceOrder.NETEASE_FIRST,
-    val lyrics: SourceOrder = SourceOrder.NETEASE_FIRST,
-    val cover: SourceOrder = SourceOrder.NETEASE_FIRST,
+    val tags: List<SourceSelection> = defaultSourceSelections(),
+    val lyrics: List<SourceSelection> = defaultSourceSelections(),
+    val cover: List<SourceSelection> = defaultSourceSelections(),
 ) {
-    operator fun get(group: MetadataGroup): SourceOrder = when (group) {
+    operator fun get(group: MetadataGroup): List<SourceSelection> = when (group) {
         MetadataGroup.TAGS -> tags
         MetadataGroup.LYRICS -> lyrics
         MetadataGroup.COVER -> cover
     }
 
+    fun enabled(group: MetadataGroup): List<MusicSource> = this[group].filter { it.enabled }.map { it.source }
+
+    fun replace(group: MetadataGroup, selections: List<SourceSelection>): ScrapeSources = when (group) {
+        MetadataGroup.TAGS -> copy(tags = selections)
+        MetadataGroup.LYRICS -> copy(lyrics = selections)
+        MetadataGroup.COVER -> copy(cover = selections)
+    }
 }
 
 data class ScrapeOptions(
@@ -247,10 +258,5 @@ data class SongCandidate(
 ) {
     val key: String get() = "${source.name}:$id"
 }
-
-data class MatchResult(
-    val candidate: SongCandidate,
-    val confidence: Double,
-)
 
 internal val supportedAudioExtensions: Set<String> = setOf("flac", "mp3", "wav")

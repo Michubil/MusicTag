@@ -4,12 +4,13 @@ import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
+import top.michubil.musictag.data.match.RankedCandidate
+import top.michubil.musictag.data.match.SourceReport
+import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.model.FieldPolicy
-import top.michubil.musictag.data.model.MatchResult
 import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.ScrapeSources
-import top.michubil.musictag.data.model.SourceOrder
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
 import top.michubil.musictag.data.rename.RenameEntry
@@ -37,7 +38,15 @@ data class MainUiState(
     val renameError: String? = null,
     val policies: Map<MetadataField, FieldPolicy> = MetadataField.entries.associateWith { FieldPolicy() },
     val recursive: Boolean = false,
-    val candidates: List<MatchResult> = emptyList(),
+    val candidates: List<RankedCandidate> = emptyList(),
+    val candidateReports: List<SourceReport> = emptyList(),
+    val fingerprintSuggestions: List<FingerprintSuggestion> = emptyList(),
+    val fingerprintNotice: String? = null,
+    val fingerprintLoading: Boolean = false,
+    val candidateNotice: String? = null,
+    val queryTitle: String = "",
+    val queryArtists: String = "",
+    val unresolved: List<UnresolvedMatch> = emptyList(),
     val candidateError: String? = null,
     val loading: Boolean = true,
     val showingCachedContent: Boolean = false,
@@ -115,6 +124,8 @@ data class MainUiState(
     val canRename: Boolean get() = canEditSelection && !renameLoading && renameError == null && renameEntries.any { it.willRename }
     val canSaveTags: Boolean get() = canEditSelection && editor.canSave
 }
+
+data class UnresolvedMatch(val document: MusicDocument, val reason: String)
 
 sealed interface MainEffect {
     data class OpenDirectory(val uri: String) : MainEffect

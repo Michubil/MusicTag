@@ -2,6 +2,7 @@ package top.michubil.musictag.data.network
 
 import top.michubil.musictag.data.model.CoverImages
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -64,6 +65,7 @@ internal object MusicHttp : MusicTransport {
                 setRequestProperty("Content-Type", contentType)
             }
         }
+        currentCoroutineContext()[Job]?.invokeOnCompletion { connection.disconnect() }
         try {
             if (body != null) connection.outputStream.use { it.write(body) }
             val code = connection.responseCode

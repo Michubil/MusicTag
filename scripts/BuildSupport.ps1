@@ -12,6 +12,8 @@ function getBuildSettings {
         CompileSdk = 'compileSdk\s*=\s*(\d+)'
         MinSdk = 'minSdk\s*=\s*(\d+)'
         BuildToolsVersion = 'buildToolsVersion\s*=\s*"([^"]+)"'
+        NdkVersion = 'ndkVersion\s*=\s*"([^"]+)"'
+        CmakeVersion = 'cmake\s*\{[\s\S]*?version\s*=\s*"([^"]+)"'
         JavaVersion = 'JavaLanguageVersion\.of\((\d+)\)'
     }
     $settings = [ordered]@{ Root = $projectRoot }

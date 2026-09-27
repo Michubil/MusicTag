@@ -9,20 +9,32 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val acoustIdClientKey = providers.environmentVariable("ACOUSTID_CLIENT_KEY").orNull.orEmpty()
+require(acoustIdClientKey.matches(Regex("[A-Za-z0-9]*"))) { "ACOUSTID_CLIENT_KEY must be alphanumeric" }
+
 android {
     namespace = "top.michubil.musictag"
     compileSdk = 37
     buildToolsVersion = "37.0.0"
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "top.michubil.musictag"
         minSdk = 35
         targetSdk = 37
-        versionCode = 32
-        versionName = "1.2.6"
+        versionCode = 33
+        versionName = "1.2.8"
 
         ndk {
             abiFilters += "arm64-v8a"
+        }
+        buildConfigField("String", "ACOUSTID_CLIENT_KEY", "\"$acoustIdClientKey\"")
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
