@@ -4,7 +4,7 @@ package dev.androidgui.core.designsystem.component
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -171,7 +171,7 @@ private fun AppNavigationBarContent(
     onDestinationSelected: (Int) -> Unit,
 ) {
     NavigationBar(
-        modifier = Modifier.heightIn(min = AppDimensions.NavigationBarHeight),
+        modifier = Modifier.height(AppDimensions.NavigationBarHeight),
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = AppElevation.Level0,
