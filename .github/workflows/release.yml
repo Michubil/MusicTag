@@ -135,6 +135,6 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Release draft could not be published.' }
             }
           } else {
-            gh release create $env:RELEASE_TAG $apk --repo $env:GH_REPO --verify-tag --generate-notes --title "release: $env:RELEASE_TAG"
+            gh release create $env:RELEASE_TAG $apk --repo $env:GH_REPO --verify-tag --generate-notes --title $env:APK_VERSION
             if ($LASTEXITCODE -ne 0) { throw 'Release creation or APK upload failed.' }
           }

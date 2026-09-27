@@ -23,7 +23,7 @@ pwsh -NoProfile -File .\scripts\release.ps1 -Version 1.3.0
 
 `release.ps1` 只负责递增 `versionCode`、准备版本提交、运行本地检查、推送职责书签、创建或复用 PR、等待 GitHub 按分支保护合并、同步 `main` 并推送版本标签。`-Bump` 还支持 `minor` 和 `major`；`-DryRun` 只读展示目标版本与候选书签。发布前必须有可用的 `origin` 和已登录的 `gh`。若 PR 检查失败、等待合并超时或目标标签已存在，脚本停止，不绕过保护或覆盖标签。
 
-推送 `v<versionName>` 标签才触发 `release.yml` 的正式构建和 GitHub Release 创建。无需手工创建或 Publish Release；工作流将标题设为 `release: v<versionName>`，发布说明由 GitHub 自动生成。
+推送 `v<versionName>` 标签才触发 `release.yml` 的正式构建和 GitHub Release 创建。无需手工创建或 Publish Release；工作流将标题设为 `<versionName>`（例如 `1.2.7`），发布说明由 GitHub 自动生成。
 
 ## 签名设置
 
