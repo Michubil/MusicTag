@@ -108,7 +108,7 @@ fun MusicTagApp(
         LaunchedEffect(state.message) {
             state.message?.let {
                 snackbar.showMessage(it)
-                model.onAction(MainAction.ConsumeMessage)
+                model.consumeMessage()
             }
         }
         key(state.treeUri) { AppNavigation(state, model, snackbar, onChooseStorageTree, onChooseTagCover, onOpenUrl) }
@@ -131,6 +131,8 @@ private fun AppNavigation(
     val lifecycle = entry?.lifecycle?.currentStateAsState()?.value
     var pendingTab by remember { mutableStateOf<Int?>(null) }
     var fileWorkRoot by remember { mutableStateOf(Routes.Files) }
+    var fileMenuExpanded by remember { mutableStateOf(false) }
+    var editMenuExpanded by remember { mutableStateOf(false) }
     val latestDirectoryPicker by rememberUpdatedState(onChooseStorageTree)
     val latestCoverPicker by rememberUpdatedState(onChooseTagCover)
     val latestUrlOpener by rememberUpdatedState(onOpenUrl)
@@ -154,27 +156,29 @@ private fun AppNavigation(
         else -> appName
     }
     LaunchedEffect(showFileActions) {
-        if (!showFileActions) model.onAction(MainAction.SetEditMenu(false))
+        if (!showFileActions) editMenuExpanded = false
     }
     BrowserDirectoryEffect(
         entry?.id,
         browserDirectoryUri(entry?.destination?.route, state.root?.uri, entry?.arguments?.getString("path")),
     ) { uri ->
-        model.onAction(MainAction.DirectoryShown(uri))
+        model.directoryShown(uri)
     }
     LaunchedEffect(entry?.id) {
-        if (entry != null && route != Routes.Candidates) model.onAction(MainAction.CancelCandidateSearch)
-        if (entry != null && route != Routes.Rename) model.onAction(MainAction.CancelRenamePreview)
-        if (entry != null && route != Routes.Editor) model.onAction(MainAction.CancelTagEditor)
-        model.onAction(MainAction.DismissTransientUi)
+        if (entry != null && route != Routes.Candidates) model.cancelCandidateSearch()
+        if (entry != null && route != Routes.Rename) model.cancelRenamePreview()
+        if (entry != null && route != Routes.Editor) model.cancelTagEditor()
+        model.dismissTransientUi()
+        fileMenuExpanded = false
+        editMenuExpanded = false
     }
     LaunchedEffect(route) {
-        if (shouldLeaveSearch(route)) model.onAction(MainAction.LeaveSearch)
+        if (shouldLeaveSearch(route)) model.leaveSearch()
     }
     val keepAlbumTracks = albumTracksVisible ||
         (fileWorkRoot == Routes.Albums && route in setOf(Routes.Options, Routes.Candidates, Routes.Rename, Routes.Editor))
     LaunchedEffect(keepAlbumTracks) {
-        if (!keepAlbumTracks) model.onAction(MainAction.LeaveAlbum)
+        if (!keepAlbumTracks) model.leaveAlbum()
     }
     LaunchedEffect(route, state.selected.isEmpty(), state.busy) {
         if (shouldReturnToBrowser(route, state)) {
@@ -191,7 +195,7 @@ private fun AppNavigation(
                 else -> Routes.Settings
             }
             if (tabDecision(route, target, fileWorkRoot) != TabDecision.Stay) {
-                model.onAction(MainAction.DismissTransientUi)
+                model.dismissTransientUi()
                 fileWorkRoot = if (target == Routes.Albums) Routes.Albums else Routes.Files
                 selectTopLevel(nav, route, target, fileWorkRoot)
             }
@@ -261,33 +265,34 @@ private fun AppNavigation(
     val menuVisible = browserVisible || albumsVisible || albumSearchVisible || albumTracksVisible
     AppScaffold(
         screenKey = entry?.id,
-        modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog || state.mp3TagVersionDialog || state.sourceDialog != null) && settingsVisible) || (state.sortDialog && (browserVisible || albumSearchVisible)) ||
+        modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog || state.sourceDialog != null) && settingsVisible) || (state.sortDialog && (browserVisible || albumSearchVisible)) ||
             ((state.albumSortDialog || state.albumColumnsDialog) && albumsVisible) ||
-            (state.availableUpdate != null && aboutVisible) || (state.editMenuExpanded && showFileActions),
+            (state.availableUpdate != null && aboutVisible) || (editMenuExpanded && showFileActions),
         topBar = {
             AppTopBar(
                 title = title,
                 menuItems = fileMenu,
-                menuExpanded = state.fileMenuExpanded && menuVisible,
-                onMenuExpandedChange = { model.onAction(MainAction.SetFileMenu(it)) },
+                menuExpanded = fileMenuExpanded && menuVisible,
+                onMenuExpandedChange = { fileMenuExpanded = it },
                 onMenuItemClick = { id ->
-                    model.onAction(when (id) {
-                        "folder" -> MainAction.ChooseStorageTree
-                        "sort" -> MainAction.ShowSortDialog
-                        "album_sort" -> MainAction.ShowAlbumSortDialog
-                        "album_columns" -> MainAction.ShowAlbumColumnsDialog
-                        "all" -> MainAction.ToggleSelectAll
-                        "clear" -> MainAction.ClearSelection
+                    fileMenuExpanded = false
+                    when (id) {
+                        "folder" -> model.chooseStorageTree()
+                        "sort" -> model.showSortDialog()
+                        "album_sort" -> model.showAlbumSortDialog()
+                        "album_columns" -> model.showAlbumColumnsDialog()
+                        "all" -> model.toggleSelectAll()
+                        "clear" -> model.clearSelection()
                         else -> error("Unknown file menu action")
-                    })
+                    }
                 },
                 actions = if ((browserVisible || albumsVisible) && !searchVisible) {
                     listOf(AppMenuItem("search", "搜索", AppIcons.Search, state.canSearch))
                 } else emptyList(),
-                onActionClick = { if (it == "search") model.onAction(MainAction.OpenSearch) },
+                onActionClick = { if (it == "search") model.openSearch() },
                 search = if (searchVisible) AppSearchState(state.searchQuery, "歌曲名、艺术家或专辑") else null,
-                onSearchQueryChange = { model.onAction(MainAction.SetSearchQuery(it)) },
-                onSearchClose = { model.onAction(MainAction.CloseSearch) },
+                onSearchQueryChange = { model.setSearchQuery(it) },
+                onSearchClose = { model.closeSearch() },
             )
         },
         bottomBar = {
@@ -302,14 +307,14 @@ private fun AppNavigation(
             )
         },
         bottomActions = if (route == Routes.Options) {
-            { OptionsActions(state, model::onAction) }
+            { OptionsActions(state, model) }
         } else if (route == Routes.Rename) {
-            { RenameActions(state, model::onAction) }
+            { RenameActions(state, model) }
         } else if (route == Routes.Editor) {
-            { TagEditorActions(state.editor, state.canEditSelection, model::onAction) }
+            { TagEditorActions(state.editor, state.canEditSelection, model) }
         } else null,
         floatingAction = if (showFileActions) {
-            { FileActions(state, model::onAction) }
+            { FileActions(state, model, editMenuExpanded) { editMenuExpanded = it && showFileActions; fileMenuExpanded = false } }
         } else null,
         snackbarState = snackbar,
     ) {
@@ -324,43 +329,43 @@ private fun AppNavigation(
             predictivePopExitTransition = { _ -> transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
         ) {
             composable(Routes.Search) {
-                LaunchedEffect(Unit) { model.onAction(MainAction.ActivateSearch) }
-                SearchPage(state, model::onAction)
+                LaunchedEffect(Unit) { model.activateSearch() }
+                SearchPage(state, model)
             }
             composable(Routes.AlbumSearch) {
-                LaunchedEffect(Unit) { model.onAction(MainAction.ActivateSearch) }
-                SearchPage(state, model::onAction)
+                LaunchedEffect(Unit) { model.activateSearch() }
+                SearchPage(state, model)
             }
             composable(Routes.Files) { files ->
-                DirectoryPage(state.root?.uri, files.id == entry?.id, state, model::onAction)
+                DirectoryPage(state.root?.uri, files.id == entry?.id, state, model)
             }
             composable(
                 Routes.Folder,
                 arguments = listOf(navArgument("path") { type = NavType.StringType }),
             ) { folder ->
-                DirectoryPage(requireNotNull(folder.arguments?.getString("path")), folder.id == entry?.id, state, model::onAction)
+                DirectoryPage(requireNotNull(folder.arguments?.getString("path")), folder.id == entry?.id, state, model)
             }
-            composable(Routes.Options) { OptionsPage(state, model::onAction) }
-            composable(Routes.Rename) { RenamePage(state, model::onAction) }
-            composable(Routes.Editor) { TagEditorPage(state.editor, state.busy, model::onAction) }
-            composable(Routes.Candidates) { CandidatesPage(state, model::onAction) }
-            composable(Routes.Settings) { SettingsPage(state, model::onAction) }
-            composable(Routes.About) { AboutPage(state, model::onAction) }
-            composable(Routes.Albums) { AlbumsPage(state, model::onAction) }
+            composable(Routes.Options) { OptionsPage(state, model) }
+            composable(Routes.Rename) { RenamePage(state, model) }
+            composable(Routes.Editor) { TagEditorPage(state.editor, state.busy, model) }
+            composable(Routes.Candidates) { CandidatesPage(state, model) }
+            composable(Routes.Settings) { SettingsPage(state, model) }
+            composable(Routes.About) { AboutPage(state, model) }
+            composable(Routes.Albums) { AlbumsPage(state, model) }
             composable(
                 Routes.Album,
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
-            ) { AlbumTracksPage(state, model::onAction) }
+            ) { AlbumTracksPage(state, model) }
         }
     }
-    MainDialogs(state, settingsVisible, browserVisible || albumSearchVisible, aboutVisible, albumsVisible, model::onAction)
+    MainDialogs(state, settingsVisible, browserVisible || albumSearchVisible, aboutVisible, albumsVisible, model)
 }
 
 /** Freeze an outgoing folder while its exit/predictive-back transition is still on screen. */
 @Composable
-private fun DirectoryPage(uri: String?, active: Boolean, state: MainUiState, onAction: (MainAction) -> Unit) {
+private fun DirectoryPage(uri: String?, active: Boolean, state: MainUiState, model: MainViewModel) {
     val displayed = rememberDirectoryState(uri, active, state)
-    BrowserPage(displayed, onAction, loadPreviews = active && displayed === state)
+    BrowserPage(displayed, model, loadPreviews = active && displayed === state)
 }
 
 @Composable

@@ -15,7 +15,6 @@ import top.michubil.musictag.data.edit.TagEditInputs
 import top.michubil.musictag.data.edit.TagEditSource
 import top.michubil.musictag.data.edit.TagValues
 import top.michubil.musictag.data.model.MetadataField
-import top.michubil.musictag.data.model.Mp3TagVersion
 import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.storage.MusicDocument
 
@@ -47,7 +46,7 @@ class TagEditorSessionTest {
         release.complete(Unit)
         yield()
         assertEquals(TagEditorState(), editor.state)
-        assertNull(editor.session.prepareSave(Mp3TagVersion.V24))
+        assertNull(editor.session.prepareSave())
         assertTrue(editor.messages.isEmpty())
     }
 
@@ -77,7 +76,7 @@ class TagEditorSessionTest {
         editor.session.load(listOf(source.document), false, AudioFilters())
         yield()
         editor.session.changeDraft { it.copy(text = it.text + (MetadataField.TITLE to "Saved"), changed = setOf(MetadataField.TITLE)) }
-        val request = requireNotNull(editor.session.prepareSave(Mp3TagVersion.V23))
+        val request = requireNotNull(editor.session.prepareSave())
         val finish = CompletableDeferred<Unit>()
         var savedTitle: RemoteValue<String>? = null
         val operation = launch {
@@ -92,7 +91,6 @@ class TagEditorSessionTest {
         operation.join()
         assertEquals(RemoteValue.Available("Saved"), savedTitle)
         assertEquals(listOf(source), request.sources)
-        assertEquals(Mp3TagVersion.V23, request.mutation.options.mp3TagVersion)
         assertEquals(1, request.skipped)
     }
 
@@ -110,9 +108,9 @@ class TagEditorSessionTest {
         assertNull(editor.state.error)
         editor.session.changeDraft { it.copy(text = it.text + (MetadataField.DATE to "2026-02-30"), changed = setOf(MetadataField.DATE)) }
         assertNotNull(editor.state.validation)
-        assertNull(editor.session.prepareSave(Mp3TagVersion.V24))
+        assertNull(editor.session.prepareSave())
         editor.session.changeDraft { it.copy(text = it.text + (MetadataField.DATE to "2026-02-28")) }
-        assertNotNull(editor.session.prepareSave(Mp3TagVersion.V24))
+        assertNotNull(editor.session.prepareSave())
     }
 
     @Test

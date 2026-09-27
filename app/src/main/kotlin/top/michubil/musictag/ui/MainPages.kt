@@ -3,7 +3,10 @@ package top.michubil.musictag.ui
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.androidgui.core.designsystem.component.*
@@ -15,17 +18,16 @@ import top.michubil.musictag.data.AlbumSort
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
 import top.michubil.musictag.data.model.MetadataField
-import top.michubil.musictag.data.model.Mp3TagVersion
 import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.SourceOrder
 import kotlin.math.roundToInt
 
 @Composable
-fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews: Boolean = true) {
+fun BrowserPage(state: MainUiState, model: MainViewModel, loadPreviews: Boolean = true) {
     AppRefreshableContentList(
         refreshing = state.refreshing,
         enabled = state.canRefresh,
-        onRefresh = { onAction(MainAction.PullRefresh) },
+        onRefresh = { model.pullRefresh() },
         compact = true,
         status = if (state.busy || (state.loading && !state.showingCachedContent && !state.refreshing)) {
             {
@@ -39,7 +41,7 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
         } else null,
     ) {
         if (state.showStoragePicker) {
-            item { SelectMusicFolderEmpty(state, onAction) }
+            item { SelectMusicFolderEmpty(state, model) }
         } else if (state.storageGranted) {
             state.storageError?.let { error ->
                 item {
@@ -47,7 +49,7 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
                         title = "无法刷新文件夹",
                         message = error,
                         actionLabel = "重试",
-                        onAction = { onAction(MainAction.Refresh) },
+                        onAction = { model.refresh() },
                     )
                 }
             }
@@ -57,7 +59,7 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
                         title = "有文件需要恢复",
                         message = error,
                         actionLabel = "重试恢复",
-                        onAction = { onAction(MainAction.Refresh) },
+                        onAction = { model.refresh() },
                     )
                 }
             }
@@ -73,13 +75,13 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
                         icon = AppIcons.Folder,
                         selected = path in state.selected,
                         selectionLabel = "选择 ${item.document.name}",
-                        onClick = { onAction(MainAction.OpenDirectory(path)) },
-                        onSelectedChange = { onAction(MainAction.ToggleSelection(path)) },
+                        onClick = { model.openDirectory(path) },
+                        onSelectedChange = { model.toggleSelection(path) },
                         enabled = state.canOpenDirectories,
                         selectionEnabled = state.canSelectFiles,
                     )
                 } else {
-                    AudioFileRow(item, state, onAction, loadPreviews)
+                    AudioFileRow(item, state, model, loadPreviews)
                 }
             }
         }
@@ -87,11 +89,11 @@ fun BrowserPage(state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews
 }
 
 @Composable
-fun SearchPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun SearchPage(state: MainUiState, model: MainViewModel) {
     AppRefreshableContentList(
         refreshing = state.libraryRefreshing,
         enabled = state.canRefreshSearch,
-        onRefresh = { onAction(MainAction.PullRefresh) },
+        onRefresh = { model.pullRefresh() },
         compact = true,
         status = if (state.libraryLoading) {
             {
@@ -107,28 +109,28 @@ fun SearchPage(state: MainUiState, onAction: (MainAction) -> Unit) {
             state.searchQuery.isBlank() -> item { EmptyState(title = "搜索歌曲名、艺术家或专辑") }
             state.searchItems.isEmpty() && !state.libraryLoading && !state.libraryRefreshing -> item { EmptyState(title = "没有找到匹配的歌曲") }
             else -> items(state.searchItems, key = { it.document.uri }) { item ->
-                AudioFileRow(item, state, onAction, loadPreviews = true)
+                AudioFileRow(item, state, model, loadPreviews = true)
             }
         }
     }
 }
 
 @Composable
-internal fun SelectMusicFolderEmpty(state: MainUiState, onAction: (MainAction) -> Unit) {
+internal fun SelectMusicFolderEmpty(state: MainUiState, model: MainViewModel) {
     EmptyState(
         title = "选择音乐文件夹",
         message = state.storageError ?: "选择文件夹并允许读写，Music Tag 只访问你授权的文件夹及其子目录。",
         actionLabel = "选择文件夹",
-        onAction = { onAction(MainAction.ChooseStorageTree) },
+        onAction = { model.chooseStorageTree() },
     )
 }
 
 @Composable
-internal fun AudioFileRow(item: FileItem, state: MainUiState, onAction: (MainAction) -> Unit, loadPreviews: Boolean) {
+internal fun AudioFileRow(item: FileItem, state: MainUiState, model: MainViewModel, loadPreviews: Boolean) {
     val preview by item.preview.collectAsStateWithLifecycle()
     DisposableEffect(item, state.artworkRevision, loadPreviews) {
-        if (loadPreviews) onAction(MainAction.LoadFilePreview(item))
-        onDispose { if (loadPreviews) onAction(MainAction.ReleaseArtwork(item)) }
+        if (loadPreviews) model.loadFilePreview(item)
+        onDispose { if (loadPreviews) model.releaseArtwork(item) }
     }
     AppThreeLineContentRow(
         title = item.document.name,
@@ -138,25 +140,25 @@ internal fun AudioFileRow(item: FileItem, state: MainUiState, onAction: (MainAct
         artwork = preview.artwork?.asImageBitmap(),
         selected = item.document.uri in state.selected,
         selectionLabel = "选择 ${item.document.name}",
-        onClick = { onAction(MainAction.ToggleSelection(item.document.uri)) },
-        onSelectedChange = { onAction(MainAction.ToggleSelection(item.document.uri)) },
+        onClick = { model.toggleSelection(item.document.uri) },
+        onSelectedChange = { model.toggleSelection(item.document.uri) },
         enabled = state.canSelectFiles,
     )
 }
 
 @Composable
-fun OptionsActions(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun OptionsActions(state: MainUiState, model: MainViewModel) {
     AppActionBar(
         primaryLabel = "开始刮削",
         secondaryLabel = "手动匹配",
-        onPrimary = { onAction(MainAction.StartAutomatic) },
-        onSecondary = { onAction(MainAction.LoadCandidates) },
+        onPrimary = { model.startAutomatic() },
+        onSecondary = { model.loadCandidates() },
         enabled = state.canScrape,
     )
 }
 
 @Composable
-fun OptionsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun OptionsPage(state: MainUiState, model: MainViewModel) {
     val enabledPolicies = state.policies.values.filter { it.enabled }
     AppContentList {
         if (state.busy) item { AppProgress() }
@@ -166,11 +168,11 @@ fun OptionsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                     AppSelectionRow(
                         label = "全选",
                         checked = state.policies.values.all { it.enabled },
-                        onCheckedChange = { onAction(MainAction.ToggleAllFields) },
+                        onCheckedChange = { model.toggleAllFields() },
                         secondaryLabel = "全选",
                         secondaryDescription = "覆盖现有值，全选",
                         secondaryChecked = enabledPolicies.isNotEmpty() && enabledPolicies.all { it.overwrite },
-                        onSecondaryChange = { onAction(MainAction.ToggleAllOverwrite) },
+                        onSecondaryChange = { model.toggleAllOverwrite() },
                         enabled = !state.busy,
                         secondaryEnabled = enabledPolicies.isNotEmpty(),
                     )
@@ -181,11 +183,11 @@ fun OptionsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         AppSelectionRow(
                             label = field.label,
                             checked = policy.enabled,
-                            onCheckedChange = { onAction(MainAction.SetFieldEnabled(field, it)) },
+                            onCheckedChange = { model.setFieldEnabled(field, it) },
                             secondaryLabel = "覆盖",
                             secondaryDescription = "覆盖已有${field.label}",
                             secondaryChecked = policy.overwrite,
-                            onSecondaryChange = { onAction(MainAction.SetOverwrite(field, it)) },
+                            onSecondaryChange = { model.setOverwrite(field, it) },
                             enabled = !state.busy,
                             secondaryEnabled = policy.enabled,
                         )
@@ -197,7 +199,7 @@ fun OptionsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun CandidatesPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun CandidatesPage(state: MainUiState, model: MainViewModel) {
     AppContentList {
         when {
             state.busy -> item { AppProgress(message = "正在查找匹配歌曲") }
@@ -206,7 +208,7 @@ fun CandidatesPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                     title = "无法获取候选歌曲",
                     message = state.candidateError,
                     actionLabel = "重试",
-                    onAction = { onAction(MainAction.LoadCandidates) },
+                    onAction = { model.loadCandidates() },
                 )
             }
             state.candidates.isEmpty() -> item { EmptyState(title = "没有找到候选歌曲") }
@@ -216,7 +218,7 @@ fun CandidatesPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                     summary = result.candidate.artists.joinToString(" / "),
                     details = "${result.candidate.album} · ${result.candidate.source.label} · 匹配度 ${(result.confidence * 100).roundToInt()}%",
                     icon = AppIcons.Music,
-                    onClick = { onAction(MainAction.ChooseCandidate(result.candidate)) },
+                    onClick = { model.chooseCandidate(result.candidate) },
                 )
             }
         }
@@ -224,7 +226,7 @@ fun CandidatesPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun SettingsPage(state: MainUiState, model: MainViewModel) {
     AppContentList {
         item {
             PreferenceGroup(title = "刮削数据源") {
@@ -235,7 +237,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                             value = state.scrapeSources[group].label,
                             icon = if (group == MetadataGroup.LYRICS) AppIcons.Lyrics else AppIcons.Music,
                             enabled = !state.busy,
-                            onClick = { onAction(MainAction.ShowSourceDialog(group)) },
+                            onClick = { model.showSourceDialog(group) },
                         )
                     }
                 }
@@ -248,14 +250,14 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                     SettingChoiceRow(
                         title = "按时间长短", value = if (state.audioFilters.minimumSeconds == 0) "未设置" else "隐藏短于 ${state.audioFilters.minimumSeconds} 秒的音频",
                         icon = AppIcons.Music, enabled = !state.busy,
-                        onClick = { onAction(MainAction.ShowDurationFilter) },
+                        onClick = { model.showDurationFilter() },
                     )
                 }
                 item {
                     SettingChoiceRow(
                         title = "按文件夹路径", value = if (state.audioFilters.excludedPaths.isEmpty()) "未设置" else "排除 ${state.audioFilters.excludedPaths.size} 个目录及其子目录",
                         icon = AppIcons.Folder, enabled = !state.busy,
-                        onClick = { onAction(MainAction.ShowPathFilter) },
+                        onClick = { model.showPathFilter() },
                     )
                 }
             }
@@ -263,22 +265,13 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
         item {
             PreferenceGroup(title = "文件操作") {
                 item {
-                    SettingChoiceRow(
-                        title = "MP3 标签写入版本",
-                        value = state.mp3TagVersion.label,
-                        icon = AppIcons.Music,
-                        enabled = !state.busy,
-                        onClick = { onAction(MainAction.ShowMp3TagVersionDialog) },
-                    )
-                }
-                item {
                     SettingSwitchRow(
                         title = "递归包含子文件夹",
                         summary = "对所选文件夹执行操作时，同时处理其子文件夹中的音乐文件",
                         icon = AppIcons.Folder,
                         checked = state.recursive,
                         enabled = !state.busy,
-                        onCheckedChange = { onAction(MainAction.SetRecursive(it)) },
+                        onCheckedChange = { model.setRecursive(it) },
                     )
                 }
             }
@@ -290,7 +283,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         title = "主题",
                         value = state.themeMode.label,
                         icon = AppIcons.Appearance,
-                        onClick = { onAction(MainAction.ShowThemeDialog) },
+                        onClick = { model.showThemeDialog() },
                     )
                 }
                 item {
@@ -299,7 +292,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         summary = "使用系统壁纸生成应用配色",
                         icon = AppIcons.Appearance,
                         checked = state.dynamicColor,
-                        onCheckedChange = { onAction(MainAction.SetDynamicColor(it)) },
+                        onCheckedChange = { model.setDynamicColor(it) },
                     )
                 }
             }
@@ -312,7 +305,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         summary = "三位毫秒转二位毫秒",
                         icon = AppIcons.Lyrics,
                         checked = state.formatLyricsTimeline,
-                        onCheckedChange = { onAction(MainAction.SetFormatLyricsTimeline(it)) },
+                        onCheckedChange = { model.setFormatLyricsTimeline(it) },
                     )
                 }
             }
@@ -324,7 +317,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         title = "Music Tag",
                         value = "版本 ${BuildConfig.VERSION_NAME}",
                         icon = AppIcons.About,
-                        onClick = { onAction(MainAction.ShowAbout) },
+                        onClick = { model.showAbout() },
                     )
                 }
             }
@@ -333,7 +326,7 @@ fun SettingsPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
+fun AboutPage(state: MainUiState, model: MainViewModel) {
     AppContentList {
         item {
             AppIdentityHeader(
@@ -343,7 +336,7 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                 version = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                 actionLabel = if (state.checkingUpdate) "正在检查更新" else "检查更新",
                 actionEnabled = !state.checkingUpdate,
-                onAction = { onAction(MainAction.CheckUpdates) },
+                onAction = { model.checkUpdates() },
             )
         }
         item {
@@ -353,7 +346,7 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         title = "源代码",
                         value = "GitHub",
                         icon = AppIcons.About,
-                        onClick = { onAction(MainAction.OpenSourceRepository) },
+                        onClick = { model.openSourceRepository() },
                     )
                 }
                 item {
@@ -361,7 +354,7 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         title = "许可证",
                         value = "Apache 2.0",
                         icon = AppIcons.About,
-                        onClick = { onAction(MainAction.OpenLicense) },
+                        onClick = { model.openLicense() },
                     )
                 }
                 item {
@@ -369,7 +362,7 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
                         title = "第三方声明",
                         value = "依赖与参考实现",
                         icon = AppIcons.About,
-                        onClick = { onAction(MainAction.OpenNotices) },
+                        onClick = { model.openNotices() },
                     )
                 }
             }
@@ -378,7 +371,13 @@ fun AboutPage(state: MainUiState, onAction: (MainAction) -> Unit) {
 }
 
 @Composable
-fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, albumsVisible: Boolean, onAction: (MainAction) -> Unit) {
+fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, albumsVisible: Boolean, model: MainViewModel) {
+    var pathDraft by remember(state.pathDialog) {
+        mutableStateOf(if (state.pathDialog) state.audioFilters.excludedPaths.joinToString("\n") else "")
+    }
+    val pathError = runCatching { AudioFilters.parsePaths(pathDraft) }.exceptionOrNull()?.userMessage()
+    var sortDraft by remember(state.sortDialog) { mutableStateOf(state.fileSort) }
+    var sortDescendingDraft by remember(state.sortDialog) { mutableStateOf(state.sortDescending) }
     MetadataGroup.entries.forEach { group ->
         AppSingleChoiceDialog(
             visible = state.sourceDialog == group && settingsVisible,
@@ -386,75 +385,66 @@ fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Bo
             options = SourceOrder.entries.map { AppChoiceOption(it, it.label) },
             selectedValue = state.scrapeSources[group],
             enabled = !state.busy,
-            onSelect = { onAction(MainAction.SetSourceOrder(group, it)) },
-            onDismissRequest = { onAction(MainAction.DismissSourceDialog) },
+            onSelect = { model.setSourceOrder(group, it) },
+            onDismissRequest = { model.dismissSourceDialog() },
         )
     }
-    AppSingleChoiceDialog(
-        visible = state.mp3TagVersionDialog && settingsVisible,
-        title = "MP3 标签写入版本",
-        options = Mp3TagVersion.entries.map { AppChoiceOption(it, it.label) },
-        selectedValue = state.mp3TagVersion,
-        enabled = !state.busy,
-        onSelect = { onAction(MainAction.SetMp3TagVersion(it)) },
-        onDismissRequest = { onAction(MainAction.DismissMp3TagVersionDialog) },
-    )
     AppSingleChoiceDialog(
         visible = state.durationDialog && settingsVisible, title = "隐藏短于所选时长的音频",
         options = AudioFilters.minimumSecondsOptions.map { AppChoiceOption(it, if (it == 0) "未设置" else "$it 秒") },
         selectedValue = state.audioFilters.minimumSeconds, enabled = !state.busy,
-        onSelect = { onAction(MainAction.SetDurationFilter(it)) },
-        onDismissRequest = { onAction(MainAction.DismissDurationFilter) },
+        onSelect = { model.setDurationFilter(it) },
+        onDismissRequest = { model.dismissDurationFilter() },
     )
     AppTextInputDialog(
-        visible = state.pathDialog && settingsVisible, title = "排除文件夹路径", value = state.pathDraft,
+        visible = state.pathDialog && settingsVisible, title = "排除文件夹路径", value = pathDraft,
         label = "相对路径，一行一个", description = "相对于所选音乐文件夹，例如 播客/缓存。排除目录及其子目录；留空取消过滤。过滤同时作用于文件列表和所有批量操作。",
-        error = state.pathError, enabled = !state.busy,
-        onValueChange = { onAction(MainAction.SetPathDraft(it)) },
-        onConfirm = { onAction(MainAction.ApplyPathFilter) },
-        onDismissRequest = { onAction(MainAction.DismissPathFilter) },
+        error = pathError, enabled = !state.busy,
+        onValueChange = { pathDraft = it },
+        onConfirm = { if (pathError == null) model.applyPathFilter(pathDraft) },
+        onDismissRequest = { model.dismissPathFilter() },
     )
     AppSingleChoiceDialog(
         visible = state.themeDialog && settingsVisible,
         title = "主题",
         options = ThemeMode.entries.map { AppChoiceOption(it, it.label) },
         selectedValue = state.themeMode,
-        onSelect = { onAction(MainAction.SetTheme(it)) },
-        onDismissRequest = { onAction(MainAction.DismissThemeDialog) },
+        onSelect = { model.setTheme(it) },
+        onDismissRequest = { model.dismissThemeDialog() },
     )
     AppSingleChoiceDialog(
         visible = state.sortDialog && browserVisible,
         title = "排序",
         options = FileSort.entries.map { AppChoiceOption(it, it.label) },
-        selectedValue = state.sortDraft,
+        selectedValue = sortDraft,
         enabled = state.canSort,
-        onSelect = { onAction(MainAction.SetSortDraft(it)) },
-        onDismissRequest = { onAction(MainAction.DismissSortDialog) },
-        toggle = AppDialogToggle("倒序", state.sortDescendingDraft) { onAction(MainAction.SetSortDescendingDraft(it)) },
-        actions = AppDialogActions("确定", "取消") { onAction(MainAction.ApplySort) },
+        onSelect = { sortDraft = it },
+        onDismissRequest = { model.dismissSortDialog() },
+        toggle = AppDialogToggle("倒序", sortDescendingDraft) { sortDescendingDraft = it },
+        actions = AppDialogActions("确定", "取消") { model.applySort(sortDraft, sortDescendingDraft) },
     )
     AppSingleChoiceDialog(
         visible = state.albumSortDialog && albumsVisible,
         title = "排序",
         options = AlbumSort.entries.map { AppChoiceOption(it, it.label) },
         selectedValue = state.albumSort,
-        onSelect = { onAction(MainAction.SetAlbumSort(it)) },
-        onDismissRequest = { onAction(MainAction.DismissAlbumSortDialog) },
+        onSelect = { model.setAlbumSort(it) },
+        onDismissRequest = { model.dismissAlbumSortDialog() },
     )
     AppSingleChoiceDialog(
         visible = state.albumColumnsDialog && albumsVisible,
         title = "最小列数",
         options = listOf(2, 3, 4).map { AppChoiceOption(it, it.toString()) },
         selectedValue = state.albumMinColumns,
-        onSelect = { onAction(MainAction.SetAlbumMinColumns(it)) },
-        onDismissRequest = { onAction(MainAction.DismissAlbumColumnsDialog) },
+        onSelect = { model.setAlbumMinColumns(it) },
+        onDismissRequest = { model.dismissAlbumColumnsDialog() },
     )
     AppConfirmDialog(
         visible = state.availableUpdate != null && aboutVisible,
         title = "发现新版本",
         message = state.availableUpdate?.let { "${it.versionName} 可下载，是否更新？" }.orEmpty(),
-        actions = AppDialogActions("下载", "取消") { onAction(MainAction.ConfirmUpdateDownload) },
-        onDismissRequest = { onAction(MainAction.DismissUpdateDownload) },
+        actions = AppDialogActions("下载", "取消") { model.confirmUpdateDownload() },
+        onDismissRequest = { model.dismissUpdateDownload() },
     )
 }
 

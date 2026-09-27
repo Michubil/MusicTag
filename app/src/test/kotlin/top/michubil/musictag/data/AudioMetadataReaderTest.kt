@@ -22,7 +22,7 @@ class AudioMetadataReaderTest {
                 byteArrayOf(0) + "image/jpeg".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(0, type.toByte(), 0) + bytes)
             val frames = listOf(requireNotNull(Id3Codec.textFrame("TIT2", listOf("Song"))),
                 picture(0, fallback), picture(3, front))
-            file.writeBytes(Id3Codec.renderTag(frames, version = version))
+            file.writeBytes(if (version == Mp3TagVersion.V23) renderV23(frames) else Id3Codec.renderTag(frames))
             val metadata = AudioMetadataReader.readPreview(file)
             // Evaluating artwork must not reopen the file or observe later changes.
             file.writeBytes(byteArrayOf())
@@ -56,5 +56,16 @@ class AudioMetadataReaderTest {
         val mp3 = directory.resolve("song.mp3").toFile()
         mp3.writeBytes(Id3Codec.renderTag(listOf(requireNotNull(Id3Codec.textFrame("TIT2", listOf("Song"))))))
         assertEquals(AudioMetadataReader.readPreview(mp3).track.getOrThrow(), AudioMetadataReader.readTrack(mp3))
+    }
+
+    private fun renderV23(frames: List<Id3Frame>): ByteArray {
+        fun int32(value: Int) = byteArrayOf((value ushr 24).toByte(), (value ushr 16).toByte(),
+            (value ushr 8).toByte(), value.toByte())
+        val body = frames.fold(byteArrayOf()) { bytes, frame ->
+            bytes + frame.id.toByteArray(Charsets.US_ASCII) + int32(frame.data.size) + byteArrayOf(0, 0) + frame.data
+        }
+        val size = byteArrayOf((body.size ushr 21 and 0x7f).toByte(), (body.size ushr 14 and 0x7f).toByte(),
+            (body.size ushr 7 and 0x7f).toByte(), (body.size and 0x7f).toByte())
+        return "ID3".toByteArray(Charsets.US_ASCII) + byteArrayOf(3, 0, 0) + size + body
     }
 }

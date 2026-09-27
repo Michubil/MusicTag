@@ -90,40 +90,6 @@ function invokeCheckedNative {
     if ($LASTEXITCODE -ne 0) { throw "$([IO.Path]::GetFileName($Executable)) failed with exit code $LASTEXITCODE." }
 }
 
-function assertBuildScriptSyntax {
-    $entryDirectories = @($PSScriptRoot, (Split-Path -Parent $PSScriptRoot))
-    $legacyEntries = @(Get-ChildItem -LiteralPath $entryDirectories -File |
-        Where-Object { $_.Name -match '\.(bat|cmd|sh)$|^gradlew$' })
-    if ($legacyEntries.Count -gt 0) { throw "Legacy shell entry points: $($legacyEntries.Name -join ', ')" }
-    $scriptFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File)
-    $scriptFiles += Get-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'gradlew.ps1')
-    foreach ($file in $scriptFiles) {
-        $parseErrors = $null
-        $parseTokens = $null
-        $scriptAst = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$parseTokens, [ref]$parseErrors)
-        if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
-        if ((Get-Content -LiteralPath $file.FullName -TotalCount 1) -ne '#Requires -Version 7.6') {
-            throw "Script must require PowerShell 7.6: $($file.Name)"
-        }
-        $legacyCommands = $scriptAst.FindAll({
-            param($node)
-            $node -is [Management.Automation.Language.CommandAst] -and
-                $node.GetCommandName() -match '(^|[\\/])(powershell|cmd|bash|sh)(\.exe)?$'
-        }, $true)
-        if ($legacyCommands.Count -gt 0 -or (Select-String -LiteralPath $file.FullName -Pattern '\.(bat|cmd)\b')) {
-            throw "Legacy shell entry point in $($file.Name). Use pwsh and native tools directly."
-        }
-        $gitCommands = $scriptAst.FindAll({
-            param($node)
-            $node -is [Management.Automation.Language.CommandAst] -and
-                $node.GetCommandName() -match '(^|[\\/])git(\.exe)?$'
-        }, $true)
-        if ($gitCommands.Count -gt 0) {
-            throw "Direct Git command in $($file.Name). Repository operations must use jj; checks and builds must work without repository metadata."
-        }
-    }
-}
-
 function getReleaseApk {
     param($Context)
     $directory = Join-Path $Context.Root 'app\build\outputs\apk\release'

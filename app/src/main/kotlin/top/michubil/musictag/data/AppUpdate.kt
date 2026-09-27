@@ -11,7 +11,7 @@ internal data class GitHubAsset(val name: String, val url: String)
 
 internal object AppUpdate {
     private const val LatestReleaseUrl = "https://api.github.com/repos/Michubil/MusicTag/releases/latest"
-    private val TagPattern = Regex("[A-Za-z0-9._-]+")
+    private val TagPattern = Regex("v[0-9]+\\.[0-9]+\\.[0-9]+")
 
     suspend fun newerRelease(currentVersion: String): AppRelease? {
         val latest = latestRelease() ?: return null
@@ -47,16 +47,11 @@ internal object AppUpdate {
     }
 
     internal fun releaseFrom(tag: String, assets: List<GitHubAsset>): AppRelease {
-        val normalized = tag.trim()
-        require(normalized.matches(TagPattern)) { "发布标签无效" }
-        val versionName = normalized.removePrefix("v").removePrefix("V")
-        require(versionName.isNotEmpty()) { "发布信息不完整" }
+        require(tag.matches(TagPattern)) { "发布标签无效" }
+        val versionName = tag.removePrefix("v")
         val expectedName = "MusicTag-v$versionName.apk"
-        val apk = assets.filter { it.name.endsWith(".apk", ignoreCase = true) && isTrustedDownloadUrl(it.url) }
-        val downloadUrl = apk.firstOrNull { it.name.equals(expectedName, ignoreCase = true) }?.url
-            ?: apk.singleOrNull()?.url
-            ?: apk.firstOrNull()?.url
-            ?: downloadUrl(normalized, versionName)
+        val downloadUrl = assets.singleOrNull { it.name == expectedName && isTrustedDownloadUrl(it.url, tag, expectedName) }?.url
+        requireNotNull(downloadUrl) { "发布信息缺少安装包" }
         return AppRelease(versionName, downloadUrl)
     }
 
@@ -65,20 +60,17 @@ internal object AppUpdate {
         val right = versionParts(current)
         val size = maxOf(left.size, right.size)
         for (index in 0 until size) {
-            val delta = left.getOrElse(index) { 0 } - right.getOrElse(index) { 0 }
-            if (delta != 0) return delta > 0
+            val comparison = left.getOrElse(index) { 0 }.compareTo(right.getOrElse(index) { 0 })
+            if (comparison != 0) return comparison > 0
         }
         return false
     }
 
-    internal fun downloadUrl(tag: String, versionName: String): String =
-        "https://github.com/Michubil/MusicTag/releases/download/$tag/MusicTag-v$versionName.apk"
-
-    internal fun isTrustedDownloadUrl(url: String): Boolean = runCatching {
+    internal fun isTrustedDownloadUrl(url: String, tag: String, apkName: String): Boolean = runCatching {
         val uri = URI(url)
         uri.scheme == "https" && uri.userInfo == null && uri.host.equals("github.com", true) &&
-            uri.path.startsWith("/Michubil/MusicTag/releases/download/") &&
-            uri.path.endsWith(".apk", ignoreCase = true)
+            uri.rawQuery == null && uri.rawFragment == null &&
+            uri.path == "/Michubil/MusicTag/releases/download/$tag/$apkName"
     }.getOrDefault(false)
 
     private fun versionParts(version: String): List<Int> =

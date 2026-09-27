@@ -1,20 +1,29 @@
-# 构建与检查
+# 构建与发布
 
-GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.yml`。
+GitHub Actions 是 APK 交付入口：`.github/workflows/ci.yml` 检查 PR，`.github/workflows/release.yml` 验证标签并发布安装包。
 
 ## GitHub Actions
 
-- PR：脚本语法、GUI/SAF 边界、两个模块的单元测试与 Lint。`main` 更新不再触发重复检查。
-- `main` 必须通过 PR 合并，GitHub Actions 的 `build` 检查通过且分支与主线保持最新后才允许合并，管理员同样受约束。
-- 同一批已确定随一个版本发布的功能、修复和版本号，在选定的 `fix/*` 或 `feat/*` 职责分支上分别提交，不另建 `release/*` 分支，通常用一个 PR 合入 `main`：PR 检查一次，发布 Release 后按当前工作流再次检查并签名打包。不要把已准备好的功能先作为一个 PR 合入，再仅为 `versionCode`、`versionName` 另开一个 PR。若功能必须提前合入、需要独立审查或主线发生变化，仍为各 PR 等待最新的必需检查；不能为减少运行次数跳过保护规则。
-- jj 书签推送后对应 GitHub 分支；重写同一书签并推送会更新 PR，取消该 PR 的过期检查。每次 Release 发布独立运行。
-- 仅 GitHub Release 的 `published` 事件触发打包（包含预发布）；检查通过后，构建并验证签名 APK。推送分支、推送标签、保存 Release 草稿均不打包，也不提供手动 Run workflow 入口。
-- 标签须等于 `v` 加 Gradle 的 `versionName`，且指向已合入 `main` 的提交；标签不会修改版本。发布前在候选 PR 中更新 `versionCode` 与 `versionName`，无需在功能 PR 合入后另开仅含版本号的 PR。
-- 包含版本号的 PR 合并后，执行 `jj git fetch --remote origin` 同步 `main`，再执行 `jj tag set v<versionName> -r main` 和 `jj git push --remote origin --tag v<versionName>`。最后在 GitHub Releases 选择该标签并点击 Publish release，触发打包；将占位符替换为实际版本。
-- 发布说明以上一个实际交付的 Release 所指向的提交为起点（不含）、本次 Release 所指向的提交为终点（含），核对该范围的提交和 PR。中间只更新了版本号、未单独交付 Release 的改动也属于本次范围；日志用 `feat`、`fix` 等类型归类，不为中间版本号另设章节。若历史 Release 或标签缺失，先核对实际发布范围，不凭版本号猜测。
-- 发布构建成功后，APK 自动附加到触发本次构建的 GitHub Release。上传任务单独获得 Release 写权限，PR 与构建任务保持只读；重复执行时跳过内容相同的附件，同名不同内容则报错。Actions 中也保留 APK 和 `Check-reports` 14 天，不自动创建新的 Release。
+- PR：`ci.yml` 的 `build` 检查运行 GUI/SAF 边界、两个模块的单元测试和 Lint；不使用 Release 密钥或打包。`main` 仅接收与最新主线同步、且 `build` 通过的 PR。
+- 已确定随同一版本交付的功能、修复和版本号优先用一个职责书签、一个 PR 合入。需要提前合入或独立审查时，各 PR 仍须通过检查。
+- 标签：仅推送 `v*` 标签触发 `release.yml`，标签须等于 `v` 加 Gradle 的 `versionName`，且指向 `main` 历史中的提交。工作流对标签提交重新运行测试与 Lint，再恢复原密钥、构建并验包，成功后创建 GitHub Release 并附加 APK。
+- 权限与产物：构建 job 只读，publish job 才有 Release 写权限；APK artifact 保留 14 天。检查失败时上传 `Check-reports`。已有 Release 缺少同名 APK 时补传，已有同名 APK 时停止并要求人工检查。
 
-使用 GitHub 托管的 Windows runner 和 PowerShell 7.6+。Actions checkout 获取本次事件的源码，PR 检查合并结果；不在 runner 上初始化 jj 仓库。Java、Android SDK 与 Build Tools 的版本由 `app/build.gradle.kts` 读取，依赖由 Gradle 管理。`prepare-ci.ps1` 只在 GitHub runner 上安装所需 SDK，不修改本机环境。
+GitHub Actions 使用 Windows runner 和 PowerShell 7.6+。Java、Android SDK 与 Build Tools 的版本从 `app/build.gradle.kts` 读取；`prepare-ci.ps1` 安装所需 SDK 组件。
+
+## 发布步骤
+
+在当前 `fix/*` 或 `feat/*` 职责书签上整理好本次交付内容，核对上一个实际交付的 Release 与本次提交范围，然后运行：
+
+```powershell
+pwsh -NoProfile -File .\scripts\release.ps1 -Bump patch
+# 或明确指定目标版本
+pwsh -NoProfile -File .\scripts\release.ps1 -Version 1.3.0
+```
+
+`release.ps1` 只负责递增 `versionCode`、准备版本提交、运行本地检查、推送职责书签、创建或复用 PR、等待 GitHub 按分支保护合并、同步 `main` 并推送版本标签。`-Bump` 还支持 `minor` 和 `major`；`-DryRun` 只读展示目标版本与候选书签。发布前必须有可用的 `origin` 和已登录的 `gh`。若 PR 检查失败、等待合并超时或目标标签已存在，脚本停止，不绕过保护或覆盖标签。
+
+推送 `v<versionName>` 标签才触发 `release.yml` 的正式构建和 GitHub Release 创建。无需手工创建或 Publish Release；工作流将标题设为 `release: v<versionName>`，发布说明由 GitHub 自动生成。
 
 ## 签名设置
 
@@ -24,7 +33,7 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\.android\debug.keystore")) | Set-Clipboard
 ```
 
-工作流将原密钥恢复到 runner 临时目录，通过 `MUSICTAG_KEYSTORE_PATH` 交给 Release 构建，结束时删除。PR 检查不读取 Secret；Debug 与 Release 的签名配置分离。验包仍校验现有 Music Tag 证书指纹，不生成替代 Release 密钥。
+工作流将原密钥恢复到 runner 临时目录，通过 `MUSICTAG_KEYSTORE_PATH` 交给 Release 构建，结束时删除。验包校验现有 Music Tag 证书指纹。
 
 ## 本地与 CI 共用脚本
 
@@ -32,10 +41,6 @@ GitHub Actions 是 APK 交付入口，工作流为 `.github/workflows/build-apk.
 | --- | --- |
 | `.\scripts\test.ps1` | 源码边界、单元测试、Lint 和报告汇总，不需要 Release 密钥 |
 | `.\scripts\build-apk.ps1` | Release 构建与验包，检查由工作流前一步执行，不重复运行测试 |
-| `.\scripts\verify-apk.ps1` | 独立检查版本、签名及 V2、权限、ARM64、ZIP 对齐、ELF 结构、许可和开发文件排除 |
+| `.\scripts\verify-apk.ps1` | 独立检查版本、签名及 V2、权限、ARM64、ZIP 对齐、许可和敏感文件排除 |
 
-本地仅在明确要求时运行检查或构建。外部启动用 `pwsh -NoProfile -File <脚本>`；脚本支持 `-SdkPath`，SDK 也可由环境变量或 `local.properties` 定位。Gradle 统一通过 `gradlew.ps1` 调用。需在本地复现 Release 时，先运行 `test.ps1`，再运行 `build-apk.ps1`；签名路径未显式设置时使用原用户目录下的密钥。
-
-测试样本均在测试临时目录生成，MP3 封面与只读回归不依赖外部歌曲；测试缺失、失败或跳过均阻止交付。APK 保留在 `app/build/outputs/apk/release/`，不复制、不纳入版本管理，密钥和开发文件不进入 APK。自动化通过不等于真机验收。
-
-检查与构建直接读取完整源码，不依赖 `.jj/`、`.git/`、暂存区或提交历史，也不通过提交差异筛选测试。本地 jj 工作区与 CI 使用相同入口；脚本语法检查同时禁止直接调用 Git。验包保留 `.jj/` 与 `.git/` 的排除检查，避免任何版本管理数据进入安装包。
+本地启动用 `pwsh -NoProfile -File <脚本>`。脚本支持 `-SdkPath`，也可从环境变量或 `local.properties` 定位 SDK。复现 Release 时先运行 `test.ps1`，再运行 `build-apk.ps1`；未设置 `MUSICTAG_KEYSTORE_PATH` 时使用原用户目录中的密钥。APK 保留在 `app/build/outputs/apk/release/`，自动化通过不等于真机验收。

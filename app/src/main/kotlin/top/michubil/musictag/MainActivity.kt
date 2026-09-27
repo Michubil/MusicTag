@@ -9,19 +9,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.ViewModelProvider
-import top.michubil.musictag.ui.MainAction
 import top.michubil.musictag.ui.MainViewModel
 import top.michubil.musictag.ui.navigation.MusicTagApp
 
 class MainActivity : ComponentActivity() {
     private val model by lazy { ViewModelProvider(this)[MainViewModel::class.java] }
     private val coverPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { model.onAction(MainAction.TagCoverSelected(it.toString())) }
+        uri?.let { model.tagCoverSelected(it.toString()) }
     }
     private val directoryPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val data = result.data
-            data?.data?.let { uri -> model.onAction(MainAction.StorageTreeSelected(uri.toString(), data.flags)) }
+            data?.data?.let { uri -> model.storageTreeSelected(uri.toString(), data.flags) }
         }
     }
 
@@ -40,12 +39,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        model.onAction(MainAction.Refresh)
+        model.refresh()
     }
 
     private fun openUrl(url: String) {
         val opened = runCatching { startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) }.isSuccess
-        if (!opened) model.onAction(MainAction.ShowMessage("无法打开链接"))
+        if (!opened) model.showMessage("无法打开链接")
     }
 
     private fun chooseStorageTree() {
