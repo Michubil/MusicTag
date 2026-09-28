@@ -2,11 +2,13 @@ package dev.androidgui.core.designsystem.component
 
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -15,15 +17,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import dev.androidgui.core.designsystem.icon.AppIconView
 import dev.androidgui.core.designsystem.icon.AppIcons
@@ -56,22 +63,24 @@ fun AppOrderDraftDialog(
         )
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = AppSpacing.Large)) {
             draft.forEachIndexed { index, item ->
-                OrderRow(
-                    item = item,
-                    enabled = enabled,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < draft.lastIndex,
-                    moveUpLabel = moveUpLabel,
-                    moveDownLabel = moveDownLabel,
-                    dragLabel = dragLabel,
-                    onCheckedChange = { checked -> draft = draft.replace(index, item.copy(enabled = checked)) },
-                    onMoveUp = { draft = draft.move(index, index - 1) },
-                    onMoveDown = { draft = draft.move(index, index + 1) },
-                    onDragBy = { delta ->
-                        val target = (index + delta).coerceIn(0, draft.lastIndex)
-                        if (target != index) draft = draft.move(index, target)
-                    },
-                )
+                key(item.id) {
+                    OrderRow(
+                        item = item,
+                        enabled = enabled,
+                        canMoveUp = index > 0,
+                        canMoveDown = index < draft.lastIndex,
+                        moveUpLabel = moveUpLabel,
+                        moveDownLabel = moveDownLabel,
+                        dragLabel = dragLabel,
+                        onCheckedChange = { checked -> draft = draft.replace(index, item.copy(enabled = checked)) },
+                        onMoveUp = { draft = draft.move(index, index - 1) },
+                        onMoveDown = { draft = draft.move(index, index + 1) },
+                        onDragBy = { delta ->
+                            val target = (index + delta).coerceIn(0, draft.lastIndex)
+                            if (target != index) draft = draft.move(index, target)
+                        },
+                    )
+                }
             }
         }
         Row(
@@ -100,6 +109,7 @@ private fun OrderRow(
 ) {
     val density = LocalDensity.current
     var dragOffset by remember(item.id) { mutableFloatStateOf(0f) }
+    val currentOnDragBy by rememberUpdatedState(onDragBy)
     Row(Modifier.fillMaxWidth().heightIn(min = AppDimensions.MinimumTouchTarget), verticalAlignment = Alignment.CenterVertically) {
         Row(
             Modifier.weight(1f).heightIn(min = AppDimensions.MinimumTouchTarget).semantics(mergeDescendants = true) {}
@@ -109,12 +119,14 @@ private fun OrderRow(
             Text(item.label, Modifier.weight(1f).padding(start = AppSpacing.Small), style = MaterialTheme.typography.bodyLarge)
             AppSwitchControl(item.enabled, enabled, remember { androidx.compose.foundation.interaction.MutableInteractionSource() })
         }
-        TextButton(onClick = onMoveUp, enabled = enabled && canMoveUp) { Text(moveUpLabel) }
-        TextButton(onClick = onMoveDown, enabled = enabled && canMoveDown) { Text(moveDownLabel) }
-        AppIconView(
-            icon = AppIcons.Sort,
-            contentDescription = dragLabel,
-            modifier = Modifier.pointerInput(item.id, enabled) {
+        Box(
+            modifier = Modifier.size(AppDimensions.MinimumTouchTarget).semantics {
+                contentDescription = "${item.label}，$dragLabel"
+                customActions = if (enabled) buildList {
+                    if (canMoveUp) add(CustomAccessibilityAction(moveUpLabel) { onMoveUp(); true })
+                    if (canMoveDown) add(CustomAccessibilityAction(moveDownLabel) { onMoveDown(); true })
+                } else emptyList()
+            }.pointerInput(item.id, enabled, density) {
                 if (!enabled) return@pointerInput
                 detectDragGestures(
                     onDragCancel = { dragOffset = 0f },
@@ -122,16 +134,19 @@ private fun OrderRow(
                     onDrag = { change, amount ->
                         change.consume()
                         dragOffset += amount.y
-                        val row = with(density) { AppDimensions.PreferenceMinHeight.toPx() }
+                        val row = with(density) { AppDimensions.MinimumTouchTarget.toPx() }
                         val shift = (dragOffset / row).toInt()
                         if (shift != 0) {
-                            onDragBy(shift)
+                            currentOnDragBy(shift)
                             dragOffset -= shift * row
                         }
                     },
                 )
             },
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            AppIconView(icon = AppIcons.Menu, contentDescription = null)
+        }
     }
 }
 
