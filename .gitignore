@@ -1,5 +1,6 @@
 /.jj/
 .android-sdk/
+app/.cxx/
 .gradle/
 .idea/
 .kotlin/
