@@ -46,15 +46,21 @@ internal class AcoustIdClient(
         private val rateGate = Mutex()
         private var lastRequest = TimeSource.Monotonic.markNow() - 350.milliseconds
 
-        internal fun parseSuggestions(response: JSONObject): List<FingerprintSuggestion> =
-            response.optJSONArray("results").objects().flatMap { result ->
+        internal fun parseSuggestions(response: JSONObject): List<FingerprintSuggestion> {
+            val suggestions = response.optJSONArray("results").objects().flatMap { result ->
                 val score = (result.opt("score") as? Number)?.toDouble() ?: return@flatMap emptyList()
                 if (!score.isFinite() || score !in 0.0..1.0) return@flatMap emptyList()
                 result.optJSONArray("recordings").objects().mapNotNull { recording ->
                     val title = recording.string("title") ?: return@mapNotNull null
                     val artists = recording.optJSONArray("artists").objects().mapNotNull { it.string("name") }
-                    FingerprintSuggestion(title, artists, score)
+                    FingerprintSuggestion(title, artists, score, recording.string("id"))
                 }
-            }.sortedByDescending { it.score }.distinctBy { it.title to it.artists }.take(8)
+            }.sortedByDescending { it.score }
+            val identifiedNames = suggestions.filter { it.recordingId != null }
+                .map { it.title to it.artists }.toSet()
+            return suggestions.filter { it.recordingId != null || (it.title to it.artists) !in identifiedNames }
+                .distinctBy { it.recordingId ?: (it.title to it.artists) }
+                .take(8)
+        }
     }
 }

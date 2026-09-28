@@ -974,7 +974,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val counts = outcomes.groupingBy { it.kind }.eachCount()
                 val unresolved = files.zip(outcomes).mapNotNull { (file, outcome) ->
-                    if (outcome.kind == ScrapeKind.REVIEW || outcome.kind == ScrapeKind.FAILED) {
+                    if (outcome.kind == ScrapeKind.PARTIAL || outcome.kind == ScrapeKind.REVIEW || outcome.kind == ScrapeKind.FAILED) {
                         UnresolvedMatch(file, outcome.reason ?: file.name)
                     } else null
                 }

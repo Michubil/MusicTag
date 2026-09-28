@@ -15,6 +15,7 @@ import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.match.MatchOutcome
 import top.michubil.musictag.data.match.ScrapeKind
 import top.michubil.musictag.data.match.SourceStatus
+import top.michubil.musictag.data.match.UserQuery
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.SongCandidate
@@ -218,6 +219,38 @@ class MetadataSourcesClientTest {
         assertEquals(RemoteValue.Available("title"), result.metadata.title)
         assertEquals(listOf(1, 1), clients.map { it.searches })
         assertEquals(listOf(1, 0), clients.map { it.downloads })
+    }
+
+    @Test
+    fun fingerprintRecoveredSearchWritesPlatformFieldsWithoutRepeatingSearch() = runBlocking {
+        val wrong = track.copy(fileName = "random.wav", title = "Wrong title", artists = listOf("Wrong artist"),
+            album = "Wrong album")
+        val candidate = song(MusicSource.NETEASE).copy(title = "Correct song", artists = listOf("Singer"),
+            album = "Correct album")
+        val source = StubClient(MusicSource.NETEASE, { query ->
+            if (query.contains("Correct song")) listOf(candidate) else emptyList()
+        }, ScrapedMetadata(
+            title = RemoteValue.Available(candidate.title),
+            artists = RemoteValue.Available(candidate.artists),
+            album = RemoteValue.Available(candidate.album),
+        ))
+        val client = MetadataSourcesClient(source)
+        val options = ScrapeOptions(
+            policies = setOf(MetadataField.TITLE, MetadataField.ARTISTS, MetadataField.ALBUM)
+                .associateWith { FieldPolicy() },
+            sources = ScrapeSources(tags = sourceSelections(MusicSource.NETEASE)),
+        )
+        val query = UserQuery(candidate.title, candidate.artists)
+        val search = client.candidates(wrong, options, query)
+        val searches = source.searches
+
+        val result = client.metadata(wrong, options, null, search, query)
+
+        assertTrue(search.outcome is MatchOutcome.Accept)
+        assertEquals(RemoteValue.Available(candidate.title), result.metadata.title)
+        assertEquals(RemoteValue.Available(candidate.artists), result.metadata.artists)
+        assertEquals(RemoteValue.Available(candidate.album), result.metadata.album)
+        assertEquals(searches, source.searches)
     }
 
     @Test

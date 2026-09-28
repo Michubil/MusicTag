@@ -76,7 +76,7 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         if (selected.isEmpty()) return PreparedScrape(disposition = ScrapeDisposition(ScrapeKind.UNCHANGED))
         blockedMessage(options)?.let { return PreparedScrape(disposition = ScrapeDisposition(ScrapeKind.FAILED, it)) }
         val reference = referenceTrack(track, forced)
-        val search = if (forced != null && prior != null) prior else {
+        val search = prior ?: run {
             val order = searchOrder(options)
             val include = if (forced == null) order else order.filter { it != forced.source }
             val collected = collect(reference, user, include, listOfNotNull(forced), order, stopWhenAccepted = true)
@@ -89,7 +89,7 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             is MatchOutcome.None -> ScrapeDisposition(ScrapeKind.FAILED, outcome.summary)
             is MatchOutcome.Accept -> error("已接受的匹配不会进入失败结果")
         })
-        return download(track, options, selected, accept, search, forced != null)
+        return download(track, options, selected, accept, search, forced != null, user)
     }
 
     private suspend fun download(
@@ -99,13 +99,14 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         accept: MatchOutcome.Accept,
         search: CandidateSearch,
         manual: Boolean,
+        user: UserQuery?,
     ): PreparedScrape {
         val anchor = accept.candidate
         val release = accept.release
         val pool = search.ranked.map { it.candidate }.let { rows ->
             if (rows.none { it.key == anchor.key }) listOf(anchor) + rows else rows
         }
-        val evidence = bestEvidence(track, anchor, null)
+        val evidence = bestEvidence(track, anchor, if (manual) null else user)
         val matches = mutableMapOf<MusicSource, SongCandidate?>()
         matches[anchor.source] = anchor
         for (source in searchOrder(options)) {
