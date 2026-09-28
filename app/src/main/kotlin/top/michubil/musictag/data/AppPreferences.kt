@@ -5,9 +5,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import top.michubil.musictag.data.model.MetadataGroup
+import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.SourceSelection
+import top.michubil.musictag.data.model.sourceSelections
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class FileSort { NAME, TYPE, MODIFIED }
@@ -63,11 +64,9 @@ class AppPreferences(context: Context) {
         persist { putBoolean("recursive", enabled) }
     }
 
-    fun setSources(group: MetadataGroup, selections: List<SourceSelection>) {
+    fun setSources(selections: List<SourceSelection>) {
         persist {
-            putString(sourceKey(group), SourceSelections.encode(selections))
-            putBoolean(SOURCES_MIGRATED, true)
-            remove(legacySourceKey(group))
+            putString(NETWORK_SOURCES, SourceSelections.encode(selections))
         }
     }
 
@@ -107,30 +106,28 @@ class AppPreferences(context: Context) {
     )
 
     private fun loadSources(): ScrapeSources {
-        val stored = MetadataGroup.entries.associateWith { SourceSelections.decode(storage.getString(sourceKey(it), null)) }
-        if (storage.getBoolean(SOURCES_MIGRATED, false) && stored.values.all { it != null }) {
-            return ScrapeSources(requireNotNull(stored.getValue(MetadataGroup.TAGS)),
-                requireNotNull(stored.getValue(MetadataGroup.LYRICS)), requireNotNull(stored.getValue(MetadataGroup.COVER)))
+        SourceSelections.decode(storage.getString(NETWORK_SOURCES, null))?.let { return ScrapeSources(it) }
+        val previous = OLD_SOURCE_GROUPS.map { group ->
+            SourceSelections.decode(storage.getString("sources_$group", null))
+                ?: SourceSelections.migrate(storage.getString("source_$group", null))
         }
-        val sources = ScrapeSources(
-            stored[MetadataGroup.TAGS] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.TAGS), null)),
-            stored[MetadataGroup.LYRICS] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.LYRICS), null)),
-            stored[MetadataGroup.COVER] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.COVER), null)),
-        )
+        val enabled = MusicSource.entries.filter { source ->
+            previous.any { selections -> selections.any { it.source == source && it.enabled } }
+        }
+        val sources = ScrapeSources(sourceSelections(*enabled.toTypedArray()))
         val editor = storage.edit()
-        MetadataGroup.entries.forEach { group ->
-            editor.putString(sourceKey(group), SourceSelections.encode(sources[group]))
-            editor.remove(legacySourceKey(group))
+        editor.putString(NETWORK_SOURCES, SourceSelections.encode(sources.selections))
+        OLD_SOURCE_GROUPS.forEach { group ->
+            editor.remove("sources_$group")
+            editor.remove("source_$group")
         }
-        check(editor.putBoolean(SOURCES_MIGRATED, true).commit()) { "无法保存音乐来源设置" }
+        editor.remove("sources_migrated")
+        check(editor.commit()) { "无法保存音乐来源设置" }
         return sources
     }
 
-    private fun sourceKey(group: MetadataGroup) = "sources_${group.name.lowercase(java.util.Locale.ROOT)}"
-
-    private fun legacySourceKey(group: MetadataGroup) = "source_${group.name.lowercase(java.util.Locale.ROOT)}"
-
     private companion object {
-        const val SOURCES_MIGRATED = "sources_migrated"
+        const val NETWORK_SOURCES = "sources_network"
+        val OLD_SOURCE_GROUPS = listOf("tags", "lyrics", "cover")
     }
 }

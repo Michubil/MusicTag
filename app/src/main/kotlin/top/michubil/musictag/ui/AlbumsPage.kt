@@ -100,7 +100,6 @@ private fun albumCards(albums: List<AlbumGroup>): List<AppAlbumCard> = albums.ma
         id = album.key,
         title = album.title,
         summary = AlbumLibrary.summary(album.tracks.size, album.year, album.artist),
-        artwork = null,
         indexLetter = album.indexLetter,
     )
 }

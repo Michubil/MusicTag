@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
@@ -144,7 +142,6 @@ data class AppMenuItem(val id: String, val label: String, val icon: AppIcon, val
 data class AppNavigationDestination(
     val label: String,
     val icon: AppIcon,
-    val badge: String? = null,
 )
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -183,24 +180,11 @@ private fun AppNavigationBarContent(
                 selected = selectedIndex == index,
                 onClick = { onDestinationSelected(index) },
                 icon = {
-                    BadgedBox(
-                        badge = {
-                            destination.badge?.let { badge ->
-                                Badge(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError,
-                                ) {
-                                    Text(text = badge)
-                                }
-                            }
-                        },
-                    ) {
-                        AppIconView(
-                            icon = destination.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(AppIconSize.Standard),
-                        )
-                    }
+                    AppIconView(
+                        icon = destination.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(AppIconSize.Standard),
+                    )
                 },
                 label = {
                     Text(
@@ -215,8 +199,6 @@ private fun AppNavigationBarContent(
                     indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    disabledIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
-                    disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
                 ),
             )
         }

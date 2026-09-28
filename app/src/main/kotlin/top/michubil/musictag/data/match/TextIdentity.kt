@@ -277,38 +277,6 @@ internal fun sameRelease(release: SongCandidate, other: SongCandidate): Boolean 
     return left == null || right == null || left == right
 }
 
-internal fun explanations(evidence: Evidence): List<String> = listOfNotNull(
-    when (evidence.title) {
-        TitleRelation.EXACT -> "标题一致"
-        TitleRelation.VARIANT -> "标题变体"
-        TitleRelation.WEAK -> "标题相近"
-        TitleRelation.NONE -> "标题不对应"
-    },
-    when (evidence.artist) {
-        ArtistRelation.MATCH -> "艺术家对应"
-        ArtistRelation.UNKNOWN -> "署名不足"
-        ArtistRelation.INCOMPLETE -> "署名未完全对应"
-        ArtistRelation.CONFLICT -> "署名不同"
-    },
-    when (evidence.version) {
-        VersionRelation.SAME -> "版本标记相同"
-        VersionRelation.UNSPECIFIED -> null
-        VersionRelation.ONE_SIDED -> "版本待确认"
-        VersionRelation.CONFLICT -> "版本冲突"
-    },
-    when (evidence.duration) {
-        DurationRelation.CLOSE -> null
-        DurationRelation.UNKNOWN -> "时长未知"
-        DurationRelation.CONFLICT -> "时长不符"
-    },
-    when (evidence.album) {
-        AlbumRelation.SAME -> null
-        AlbumRelation.UNKNOWN -> null
-        AlbumRelation.DIFFERENT -> "发行待确认"
-    },
-    "文件名歌名和歌手均已确认".takeIf { evidence.filenameConfirmed },
-)
-
 private val evidenceOrder = compareBy<Evidence>(
     { it.title == TitleRelation.EXACT || it.title == TitleRelation.VARIANT },
     { it.artist == ArtistRelation.MATCH },

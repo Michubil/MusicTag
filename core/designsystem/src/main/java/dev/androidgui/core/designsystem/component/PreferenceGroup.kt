@@ -105,11 +105,11 @@ fun PreferenceGroup(
 
 @Composable
 internal fun PreferenceSurface(
-    interactionSource: MutableInteractionSource?,
+    interactionSource: MutableInteractionSource,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val pressed = interactionSource?.collectIsPressedAsState()?.value == true
+    val pressed = interactionSource.collectIsPressedAsState().value
     val normal = preferenceCorners(LocalGroupPosition.current)
     val duration = if (pressed) AppMotion.PressShapeMillis else AppMotion.ReleaseShapeMillis
     val targetTopStart = if (pressed) AppDimensions.PreferenceGroupOuterRadius else normal.topStart

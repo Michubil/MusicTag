@@ -41,8 +41,10 @@ pwsh -NoProfile -File .\scripts\release.ps1 -Version 1.3.0
 
 | 脚本 | 职责 |
 | --- | --- |
-| `.\scripts\test.ps1` | SAF 边界、单元测试、Lint 和报告汇总，不需要 Release 密钥 |
+| `.\scripts\test.ps1` | 默认检查 SAF 边界、两个模块的单元测试、Debug 原生库与 Lint；`-MatchingOnly` 检查 SAF 边界、匹配与写入相关单元测试及 Debug 原生库，不需要 Release 密钥 |
 | `.\scripts\build-apk.ps1` | Release 构建与验包，检查由工作流前一步执行，不重复运行测试 |
 | `.\scripts\verify-apk.ps1` | 独立检查版本、签名及 V2、权限、ARM64、ZIP 对齐、许可和敏感文件排除 |
 
 本地启动用 `pwsh -NoProfile -File <脚本>`。脚本支持 `-SdkPath`，也可从环境变量或 `local.properties` 定位 SDK。复现 Release 时先运行 `test.ps1`，再运行 `build-apk.ps1`；未设置 `MUSICTAG_KEYSTORE_PATH` 时使用原用户目录中的密钥。APK 保留在 `app/build/outputs/apk/release/`，自动化通过不等于真机验收。
+
+开发匹配规则时可用 `pwsh -NoProfile -File .\scripts\test.ps1 -MatchingOnly` 做定向检查；交付前仍运行不带该参数的完整检查。固定响应测试不验证真实网络接口或手机上的指纹生成。

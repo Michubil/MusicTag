@@ -19,6 +19,7 @@ enum class MetadataField(val label: String) {
 
     companion object {
         val textFields = listOf(TITLE, ARTISTS, ALBUM, DATE, TRACK, DISC, LYRICS)
+        val tagFields = setOf(TITLE, ARTISTS, ALBUM, DATE, TRACK, DISC)
     }
 }
 
@@ -60,41 +61,20 @@ enum class Mp3TagVersion(val major: Int, val label: String) {
 
 enum class MusicSource(val label: String) { NETEASE("网易云音乐"), QQ("QQ 音乐") }
 
-/** List position is the source order. `enabled` is the only other stored state. */
 data class SourceSelection(val source: MusicSource, val enabled: Boolean)
 
 fun sourceSelections(vararg enabled: MusicSource): List<SourceSelection> {
-    val enabledSources = enabled.toList()
-    val disabled = MusicSource.entries.filter { it !in enabledSources }
-    return enabledSources.map { SourceSelection(it, enabled = true) } + disabled.map { SourceSelection(it, enabled = false) }
+    val enabledSources = enabled.toSet()
+    return MusicSource.entries.map { SourceSelection(it, it in enabledSources) }
 }
 
 fun defaultSourceSelections(): List<SourceSelection> = sourceSelections(MusicSource.NETEASE, MusicSource.QQ)
 
-enum class MetadataGroup(val label: String, val fields: Set<MetadataField>) {
-    TAGS("组合源", setOf(MetadataField.TITLE, MetadataField.ARTISTS, MetadataField.ALBUM,
-        MetadataField.DATE, MetadataField.TRACK, MetadataField.DISC)),
-    LYRICS("歌词源", setOf(MetadataField.LYRICS)),
-    COVER("图片源", setOf(MetadataField.COVER)),
-}
-
 data class ScrapeSources(
-    val tags: List<SourceSelection> = defaultSourceSelections(),
-    val lyrics: List<SourceSelection> = defaultSourceSelections(),
-    val cover: List<SourceSelection> = defaultSourceSelections(),
+    val selections: List<SourceSelection> = defaultSourceSelections(),
 ) {
-    operator fun get(group: MetadataGroup): List<SourceSelection> = when (group) {
-        MetadataGroup.TAGS -> tags
-        MetadataGroup.LYRICS -> lyrics
-        MetadataGroup.COVER -> cover
-    }
-
-    fun enabled(group: MetadataGroup): List<MusicSource> = this[group].filter { it.enabled }.map { it.source }
-
-    fun replace(group: MetadataGroup, selections: List<SourceSelection>): ScrapeSources = when (group) {
-        MetadataGroup.TAGS -> copy(tags = selections)
-        MetadataGroup.LYRICS -> copy(lyrics = selections)
-        MetadataGroup.COVER -> copy(cover = selections)
+    fun enabled(): List<MusicSource> = MusicSource.entries.filter { source ->
+        selections.any { it.source == source && it.enabled }
     }
 }
 
@@ -216,13 +196,12 @@ internal fun ScrapedMetadata.textValues(): Map<MetadataField, RemoteValue<List<S
 )
 
 /** Missing data and failed requests never override successful values or become a deletion. */
-internal fun ScrapedMetadata.merge(other: ScrapedMetadata, fields: Set<MetadataField>, fallback: Boolean): ScrapedMetadata {
+internal fun ScrapedMetadata.merge(other: ScrapedMetadata, fields: Set<MetadataField>): ScrapedMetadata {
     fun <T> pick(field: MetadataField, first: RemoteValue<T>, next: RemoteValue<T>): RemoteValue<T> = when {
         field !in fields -> first
-        !fallback -> next
         first is RemoteValue.Available -> first
         next is RemoteValue.Available -> next
-        first == RemoteValue.ConfirmedAbsent && next == RemoteValue.ConfirmedAbsent -> RemoteValue.ConfirmedAbsent
+        first == RemoteValue.ConfirmedAbsent || next == RemoteValue.ConfirmedAbsent -> RemoteValue.ConfirmedAbsent
         else -> RemoteValue.Unavailable
     }
     return ScrapedMetadata(

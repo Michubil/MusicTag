@@ -5,24 +5,23 @@ import top.michubil.musictag.data.model.SongCandidate
 
 internal data class FoundCandidate(
     val candidate: SongCandidate,
-    val sourceIndex: Int,
     val platformRank: Int,
 )
 
-internal data class Decision(val ranked: List<RankedCandidate>, val outcome: MatchOutcome)
+internal data class Decision(val ranked: List<SongCandidate>, val outcome: MatchOutcome)
 
 internal object RecordingMatch {
     fun decide(track: LocalTrack, found: List<FoundCandidate>, user: UserQuery?): Decision {
-        val ranked = found.sortedWith(displayOrder(track, user)).map { item ->
-            RankedCandidate(item.candidate, bestEvidence(track, item.candidate, user)?.let(::explanations).orEmpty())
-        }
+        val ranked = found.sortedWith(displayOrder(track, user)).map(FoundCandidate::candidate)
         if (found.isEmpty()) return Decision(ranked, MatchOutcome.None("没有合适候选"))
         if (conflictingInputs(track, user)) return Decision(ranked, MatchOutcome.Review("标签和文件名指向不同歌曲"))
         val eligible = found.filter { canAccept(track, it.candidate, user) }
         if (eligible.isEmpty()) return Decision(ranked, MatchOutcome.Review(blockReason(track, found, user)))
         val anchor = eligible.sortedWith(displayOrder(track, user)).first()
+        val anchorScore = rank(requireNotNull(bestEvidence(track, anchor.candidate, user)))
         val competing = eligible.any { item ->
-            item.candidate.key != anchor.candidate.key && !sameRecording(anchor.candidate, item.candidate)
+            item.candidate.key != anchor.candidate.key && !sameRecording(anchor.candidate, item.candidate) &&
+                rank(requireNotNull(bestEvidence(track, item.candidate, user))) == anchorScore
         }
         if (competing) return Decision(ranked, MatchOutcome.Review("存在其他可能的录音"))
         val identity = found.filter { supportsRecording(track, anchor.candidate, it.candidate) }.map { it.candidate }
@@ -34,11 +33,7 @@ internal object RecordingMatch {
         val evidence = bestEvidence(track, candidate, user) ?: return false
         if (evidence.title != TitleRelation.EXACT && evidence.title != TitleRelation.VARIANT) return false
         if (evidence.artist != ArtistRelation.MATCH) return false
-        if (!evidence.filenameConfirmed && readings(track, user).filter { !it.requiresBoth }.none { it.artistsTrusted }) {
-            return false
-        }
-        if (readings(track, user).any { it.requiresBoth } && !evidence.filenameConfirmed &&
-            readings(track, user).none { !it.requiresBoth && it.artistsTrusted }) {
+        if (!evidence.filenameConfirmed && readings(track, user).none { !it.requiresBoth && it.artistsTrusted }) {
             return false
         }
         if (evidence.version == VersionRelation.CONFLICT || evidence.version == VersionRelation.ONE_SIDED) return false
@@ -86,8 +81,9 @@ private fun displayOrder(track: LocalTrack, user: UserQuery?) = Comparator<Found
     val leftEvidence = bestEvidence(track, left.candidate, user)
     val rightEvidence = bestEvidence(track, right.candidate, user)
     compareValues(rightEvidence?.let { rank(it) }, leftEvidence?.let { rank(it) }).takeIf { it != 0 }
-        ?: left.sourceIndex.compareTo(right.sourceIndex).takeIf { it != 0 }
         ?: left.platformRank.compareTo(right.platformRank)
+            .takeIf { it != 0 }
+        ?: left.candidate.key.compareTo(right.candidate.key)
 }
 
 private fun rank(evidence: Evidence): Int {

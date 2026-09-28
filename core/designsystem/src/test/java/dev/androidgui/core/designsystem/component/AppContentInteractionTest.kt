@@ -328,11 +328,12 @@ class AppContentInteractionTest {
             AppTheme(false, false) {
                 AppAlbumGrid(
                     albums = listOf(
-                        AppAlbumCard("a", "Eclipse", "1首 2020", null, "E"),
-                        AppAlbumCard("b", "Absolute", "2首 2017", null, "A"),
+                        AppAlbumCard("a", "Eclipse", "1首 2020", "E"),
+                        AppAlbumCard("b", "Absolute", "2首 2017", "A"),
                     ),
                     minColumns = 3,
                     onAlbumClick = { clicked = it },
+                    artwork = { null },
                 )
             }
         }

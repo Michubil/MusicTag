@@ -5,21 +5,20 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import top.michubil.musictag.data.model.MetadataField
-import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.match.MatchOutcome
 import top.michubil.musictag.data.match.ScrapeKind
-import top.michubil.musictag.data.match.SourceStatus
 import top.michubil.musictag.data.match.UserQuery
-import top.michubil.musictag.data.match.planWrite
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.SongCandidate
+import top.michubil.musictag.data.model.CoverImage
 import top.michubil.musictag.data.model.LocalTrack
 import top.michubil.musictag.data.model.FieldPolicy
 import top.michubil.musictag.data.model.ScrapeOptions
@@ -35,12 +34,14 @@ class MetadataSourcesClientTest {
     ) : MusicSourceClient {
         var searches = 0
         var downloads = 0
+        val requestedFields = mutableListOf<Set<MetadataField>>()
         override suspend fun search(query: String, page: Int): SearchPage {
             searches++
             return SearchPage(find(query))
         }
         override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
             downloads++
+            requestedFields += fields
             return data
         }
     }
@@ -60,7 +61,7 @@ class MetadataSourcesClientTest {
         val results = withTimeout(5000) {
             MetadataSourcesClient(*clients.toTypedArray()).candidates(track, ScrapeOptions())
         }
-        assertEquals(MusicSource.entries.toSet(), results.ranked.map { it.candidate.source }.toSet())
+        assertEquals(MusicSource.entries.toSet(), results.ranked.map(SongCandidate::source).toSet())
         assertTrue(results.outcome is MatchOutcome.Accept)
     }
 
@@ -71,7 +72,28 @@ class MetadataSourcesClientTest {
         val qq = StubClient(MusicSource.QQ, { listOf(qqSong, qqSong, qqSong.copy(id = 2, title = "title live")) })
         val results = MetadataSourcesClient(netease, qq).candidates(track, ScrapeOptions())
         assertEquals(3, results.ranked.size)
-        assertEquals(qqSong.key, results.ranked.first().candidate.key)
+        assertEquals(qqSong.key, results.ranked.first().key)
+    }
+
+    @Test
+    fun strongerQqCandidateFoundBySecondQuerySuppliesTheMetadata() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)
+            .copy(album = "Other Album", durationMs = null)) })
+        val qq = StubClient(MusicSource.QQ, { query ->
+            if (query == "title") listOf(song(MusicSource.QQ)) else emptyList()
+        }, ScrapedMetadata(title = RemoteValue.Available("QQ title")))
+        val options = ScrapeOptions(policies = mapOf(MetadataField.TITLE to FieldPolicy()))
+        val client = MetadataSourcesClient(netease, qq)
+
+        val search = client.candidates(track, options)
+        assertEquals(MusicSource.QQ, search.ranked.first().source)
+        assertEquals(2, qq.searches)
+        assertEquals(MusicSource.QQ, (search.outcome as MatchOutcome.Accept).candidate.source)
+
+        val automatic = client.metadata(track, options, null, search)
+        assertEquals(RemoteValue.Available("QQ title"), automatic.metadata.title)
+        assertEquals(0, netease.downloads)
+        assertEquals(1, qq.downloads)
     }
 
     @Test
@@ -88,14 +110,14 @@ class MetadataSourcesClientTest {
         val results = MetadataSourcesClient(netease, qq).candidates(local, ScrapeOptions())
 
         assertTrue(searched.contains("月華の円舞曲"))
-        assertTrue(results.ranked.any { it.candidate == qqSong })
-        assertTrue(results.reports.any { it.source == MusicSource.NETEASE && it.candidateCount > 0 })
+        assertTrue(qqSong in results.ranked)
+        assertTrue(results.ranked.any { it.source == MusicSource.NETEASE })
         assertTrue(results.outcome is MatchOutcome.Review)
         assertEquals("署名不同", (results.outcome as MatchOutcome.Review).summary)
     }
 
     @Test
-    fun simplifiedTitleFallbackAlsoFeedsAutomaticScrapingWithoutRepeatingNonemptySearches() = runBlocking {
+    fun unrelatedNonemptyResultDoesNotStopOtherSourceTitleFallback() = runBlocking {
         val local = track.copy(title = "title -long subtitle-")
         val searched = mutableListOf<String>()
         val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE).copy(title = "unrelated")) })
@@ -119,7 +141,7 @@ class MetadataSourcesClientTest {
         val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) })
         val options = ScrapeOptions(
             policies = mapOf(MetadataField.TITLE to FieldPolicy()),
-            sources = ScrapeSources(tags = sourceSelections(MusicSource.QQ)),
+            sources = ScrapeSources(sourceSelections(MusicSource.QQ)),
         )
         assertEquals(1, MetadataSourcesClient(netease, qq).candidates(track, options).ranked.size)
         assertEquals(0, netease.searches)
@@ -140,13 +162,13 @@ class MetadataSourcesClientTest {
         })
         val options = ScrapeOptions(
             policies = mapOf(MetadataField.TITLE to FieldPolicy()),
-            sources = ScrapeSources(tags = sourceSelections(MusicSource.QQ)),
+            sources = ScrapeSources(sourceSelections(MusicSource.QQ)),
         )
 
         val result = MetadataSourcesClient(qq).candidates(local, options)
 
         assertEquals(listOf(artistQuery, titleQuery), searched)
-        assertEquals(MusicSource.QQ, result.ranked.single().candidate.source)
+        assertEquals(MusicSource.QQ, result.ranked.single().source)
     }
 
     @Test
@@ -166,7 +188,7 @@ class MetadataSourcesClientTest {
         }
         val options = ScrapeOptions(
             policies = mapOf(MetadataField.TITLE to FieldPolicy()),
-            sources = ScrapeSources(tags = sourceSelections(MusicSource.QQ)),
+            sources = ScrapeSources(sourceSelections(MusicSource.QQ)),
         )
         val result = MetadataSourcesClient(qq).candidates(track, options)
         assertTrue(requestedPages.containsAll(listOf(0, 1, 2)))
@@ -178,8 +200,8 @@ class MetadataSourcesClientTest {
         val netease = StubClient(MusicSource.NETEASE, { throw IllegalStateException("Unavailable") })
         val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) })
         val results = MetadataSourcesClient(netease, qq).candidates(track, ScrapeOptions())
-        assertEquals(listOf(MusicSource.QQ), results.ranked.map { it.candidate.source })
-        assertEquals(SourceStatus.FAILED, results.reports.first { it.source == MusicSource.NETEASE }.status)
+        assertEquals(listOf(MusicSource.QQ), results.ranked.map(SongCandidate::source))
+        assertTrue(results.outcome is MatchOutcome.Accept)
     }
 
     @Test
@@ -188,8 +210,8 @@ class MetadataSourcesClientTest {
         val qq = StubClient(MusicSource.QQ, { emptyList() })
         val results = MetadataSourcesClient(netease, qq).candidates(track, ScrapeOptions())
         assertTrue(results.ranked.isEmpty())
-        assertEquals(SourceStatus.FAILED, results.reports.first { it.source == MusicSource.NETEASE }.status)
         assertTrue(results.outcome is MatchOutcome.None)
+        assertEquals("Unavailable", results.outcome.summary)
     }
 
     @Test
@@ -239,7 +261,7 @@ class MetadataSourcesClientTest {
         val options = ScrapeOptions(
             policies = setOf(MetadataField.TITLE, MetadataField.ARTISTS, MetadataField.ALBUM)
                 .associateWith { FieldPolicy() },
-            sources = ScrapeSources(tags = sourceSelections(MusicSource.NETEASE)),
+            sources = ScrapeSources(sourceSelections(MusicSource.NETEASE)),
         )
         val query = UserQuery(candidate.title, candidate.artists)
         val search = client.candidates(wrong, options, query)
@@ -263,7 +285,7 @@ class MetadataSourcesClientTest {
         val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
         assertEquals(RemoteValue.Available("title"), result.metadata.title)
         assertEquals(RemoteValue.Unavailable, result.metadata.lyrics)
-        assertEquals(1, qq.searches)
+        assertTrue(qq.searches > 1)
         assertEquals(0, qq.downloads)
     }
 
@@ -282,7 +304,7 @@ class MetadataSourcesClientTest {
     }
 
     @Test
-    fun sharedRecordingUsesSourceOrderForTitleAndLocalAlbumForTheRelease() = runBlocking {
+    fun sharedRecordingUsesStrongerReleaseEvidenceForFields() = runBlocking {
         val netease = StubClient(MusicSource.NETEASE,
             { listOf(song(MusicSource.NETEASE).copy(album = "XYZ")) },
             ScrapedMetadata(title = RemoteValue.Available("NetEase title"), album = RemoteValue.Available("XYZ")))
@@ -290,9 +312,10 @@ class MetadataSourcesClientTest {
             ScrapedMetadata(title = RemoteValue.Available("QQ title"), album = RemoteValue.Available("album")))
         val options = ScrapeOptions(policies = mapOf(MetadataField.TITLE to FieldPolicy(), MetadataField.ALBUM to FieldPolicy()))
         val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
-        assertEquals(RemoteValue.Available("NetEase title"), result.metadata.title)
+        assertEquals(RemoteValue.Available("QQ title"), result.metadata.title)
         assertEquals(RemoteValue.Available("album"), result.metadata.album)
         assertEquals(listOf(1, 1), listOf(netease.searches, qq.searches))
+        assertEquals(listOf(0, 1), listOf(netease.downloads, qq.downloads))
     }
 
     @Test
@@ -301,43 +324,8 @@ class MetadataSourcesClientTest {
         val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ).copy(album = "another album")) })
         val options = ScrapeOptions(policies = mapOf(MetadataField.TITLE to FieldPolicy()))
         val result = MetadataSourcesClient(netease, qq).metadata(track.copy(album = null), options, null)
-        assertEquals(ScrapeKind.COMPLETE, result.disposition.kind)
+        assertNull(result.stop)
         assertEquals(RemoteValue.Available("title"), result.metadata.title)
-    }
-
-    @Test
-    fun confirmedNoLyricsAndNoOtherMatchingSongCompleteTheWrite() = runBlocking {
-        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
-            ScrapedMetadata(title = RemoteValue.Available("Updated title"), lyrics = RemoteValue.ConfirmedAbsent))
-        val qq = StubClient(MusicSource.QQ, { emptyList() })
-        val options = ScrapeOptions(policies = mapOf(
-            MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy(),
-        ))
-
-        val prepared = MetadataSourcesClient(netease, qq).metadata(track, options, null)
-        val write = planWrite(prepared.metadata, mapOf(MetadataField.TITLE to track.title!!),
-            hasCover = false, options = options, kept = prepared.kept)
-
-        assertEquals(RemoteValue.ConfirmedAbsent, prepared.metadata.lyrics)
-        assertEquals(ScrapeKind.COMPLETE, prepared.disposition.kind)
-        assertEquals(ScrapeKind.COMPLETE, write.disposition.kind)
-        assertEquals(0, qq.downloads)
-    }
-
-    @Test
-    fun lyricFailureForAnotherMatchingSongStillReportsPartial() = runBlocking {
-        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
-            ScrapedMetadata(title = RemoteValue.Available("Updated title"), lyrics = RemoteValue.ConfirmedAbsent))
-        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
-            ScrapedMetadata(lyrics = RemoteValue.Unavailable))
-        val options = ScrapeOptions(policies = mapOf(
-            MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy(),
-        ))
-
-        val prepared = MetadataSourcesClient(netease, qq).metadata(track, options, null)
-
-        assertEquals(RemoteValue.Unavailable, prepared.metadata.lyrics)
-        assertEquals(ScrapeKind.PARTIAL, prepared.disposition.kind)
     }
 
     @Test
@@ -378,19 +366,49 @@ class MetadataSourcesClientTest {
     }
 
     @Test
-    fun corroboratedIdentityStillUsesEachGroupsConfiguredSource() = runBlocking {
-        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
+    fun selectedSongSourceSuppliesTagsAndLyricsTogether() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE,
+            { listOf(song(MusicSource.NETEASE).copy(album = "Other Album")) },
             ScrapedMetadata(title = RemoteValue.Available("NetEase title"), lyrics = RemoteValue.Available("NetEase lyrics")))
         val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
             ScrapedMetadata(title = RemoteValue.Available("QQ title"), lyrics = RemoteValue.Available("QQ lyrics")))
         val options = ScrapeOptions(
             policies = mapOf(MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy()),
-            sources = ScrapeSources(lyrics = sourceSelections(MusicSource.QQ, MusicSource.NETEASE)),
+            sources = ScrapeSources(sourceSelections(MusicSource.NETEASE, MusicSource.QQ)),
         )
         val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
-        assertEquals(RemoteValue.Available("NetEase title"), result.metadata.title)
+        assertEquals(RemoteValue.Available("QQ title"), result.metadata.title)
         assertEquals(RemoteValue.Available("QQ lyrics"), result.metadata.lyrics)
-        assertEquals(listOf(1, 1), listOf(netease.downloads, qq.downloads))
+        assertEquals(listOf(0, 1), listOf(netease.downloads, qq.downloads))
+    }
+
+    @Test
+    fun confirmedMissingLyricsRemainConfirmedWhenOtherSourceHasNone() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) })
+        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
+            ScrapedMetadata(title = RemoteValue.Available("title"), lyrics = RemoteValue.ConfirmedAbsent))
+        val options = ScrapeOptions(policies = mapOf(
+            MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy(),
+        ))
+
+        val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
+
+        assertEquals(RemoteValue.ConfirmedAbsent, result.metadata.lyrics)
+    }
+
+    @Test
+    fun confirmedMissingLyricsYieldToLyricsFromTheSameRecording() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
+            ScrapedMetadata(title = RemoteValue.Available("title"), lyrics = RemoteValue.ConfirmedAbsent))
+        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
+            ScrapedMetadata(lyrics = RemoteValue.Available("Actual lyrics")))
+        val options = ScrapeOptions(policies = setOf(MetadataField.TITLE, MetadataField.LYRICS)
+            .associateWith { FieldPolicy() })
+
+        val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
+
+        assertEquals(RemoteValue.Available("Actual lyrics"), result.metadata.lyrics)
+        assertEquals(listOf(setOf(MetadataField.LYRICS)), qq.requestedFields)
     }
 
     @Test
@@ -454,142 +472,73 @@ class MetadataSourcesClientTest {
         assertTrue(client.candidates(track, options).ranked.isEmpty())
         val prepared = client.metadata(track, options, null)
         assertEquals(ScrapedMetadata(), prepared.metadata)
-        assertEquals(ScrapeKind.UNCHANGED, prepared.disposition.kind)
+        assertEquals(ScrapeKind.UNCHANGED, prepared.stop?.kind)
         assertEquals(listOf(0, 0), clients.map { it.searches })
     }
 
-    private fun order(
-        sources: ScrapeSources = ScrapeSources(),
-        forced: SongCandidate? = null,
-        searchGroup: MetadataGroup = MetadataGroup.TAGS,
-    ): (MetadataGroup) -> List<MusicSource> = { orderedSources(it, sources, forced, searchGroup) }
+    @Test
+    fun unavailableSelectedFieldsStopBeforeWriting() = runBlocking {
+        val clients = MusicSource.entries.map { source -> StubClient(source,
+            { listOf(song(source)) }, ScrapedMetadata()) }
+        val options = ScrapeOptions(policies = mapOf(MetadataField.LYRICS to FieldPolicy()))
+
+        val prepared = MetadataSourcesClient(*clients.toTypedArray()).metadata(track, options, null)
+
+        assertEquals(ScrapeKind.REVIEW, prepared.stop?.kind)
+        assertEquals(ScrapedMetadata(), prepared.metadata)
+        assertTrue(clients.all { it.requestedFields == listOf(setOf(MetadataField.LYRICS)) })
+    }
+
+    @Test
+    fun disabledNetworkSourcesBlockScrapingBeforeAnyRequest() = runBlocking {
+        val clients = MusicSource.entries.map { source -> StubClient(source, { error("Source is disabled") }) }
+        val options = ScrapeOptions(policies = mapOf(MetadataField.TITLE to FieldPolicy()),
+            sources = ScrapeSources(sourceSelections()))
+        val metadata = MetadataSourcesClient(*clients.toTypedArray())
+
+        assertTrue(metadata.candidates(track, options).outcome is MatchOutcome.None)
+        assertEquals(ScrapeKind.FAILED, metadata.metadata(track, options, null).stop?.kind)
+        assertEquals(listOf(0, 0), clients.map { it.searches })
+    }
 
     private fun song(source: MusicSource) = SongCandidate(
         1, "title", listOf("artist"), "album", null, 1000L, null, null, 1, source,
     )
 
     @Test
-    fun firstSourceBatchesAllSelectedGroupsInOneRequest() {
-        val selected = setOf(MetadataField.TITLE, MetadataField.LYRICS, MetadataField.COVER)
-        val fields = metadataRequestFields(
-            source = MusicSource.NETEASE,
-            required = setOf(MetadataField.TITLE),
-            selected = selected,
-            attempted = emptyMap(),
-            downloaded = emptyMap(),
-            order = order(),
-        )
-        assertEquals(selected, fields)
+    fun manuallySelectedSourceRequestsTagsLyricsAndCoverTogether() = runBlocking {
+        val cover = CoverImage(byteArrayOf(1), "image/jpeg", 1, 1)
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) })
+        val qq = StubClient(MusicSource.QQ, { error("Selected source must not be searched again") },
+            ScrapedMetadata(title = RemoteValue.Available("title"),
+                lyrics = RemoteValue.Available("Lyrics"), cover = RemoteValue.Available(cover)))
+        val fields = setOf(MetadataField.TITLE, MetadataField.LYRICS, MetadataField.COVER)
+        val options = ScrapeOptions(policies = fields.associateWith { FieldPolicy() })
+
+        val result = MetadataSourcesClient(netease, qq).metadata(track, options, song(MusicSource.QQ))
+
+        assertEquals(listOf(fields), qq.requestedFields)
+        assertEquals(0, netease.downloads)
+        assertEquals(0, qq.searches)
+        assertEquals(RemoteValue.Available("Lyrics"), result.metadata.lyrics)
+        assertEquals(RemoteValue.Available(cover), result.metadata.cover)
     }
 
     @Test
-    fun unselectedFieldsAreNeverRequested() {
-        val fields = metadataRequestFields(
-            source = MusicSource.NETEASE,
-            required = MetadataField.entries.toSet(),
-            selected = setOf(MetadataField.TITLE),
-            attempted = emptyMap(),
-            downloaded = emptyMap(),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.TITLE), fields)
-    }
+    fun missingLyricsFallBackToCompatibleSourceWithoutReplacingTitle() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
+            ScrapedMetadata(title = RemoteValue.Available("Primary title")))
+        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
+            ScrapedMetadata(title = RemoteValue.Available("Other title"),
+                lyrics = RemoteValue.Available("Lyrics")))
+        val options = ScrapeOptions(policies = setOf(MetadataField.TITLE, MetadataField.LYRICS)
+            .associateWith { FieldPolicy() })
 
-    @Test
-    fun alreadyAttemptedFieldsOnThisSourceAreNotRequestedAgain() {
-        val fields = metadataRequestFields(
-            source = MusicSource.NETEASE,
-            required = setOf(MetadataField.TITLE, MetadataField.LYRICS),
-            selected = setOf(MetadataField.TITLE, MetadataField.LYRICS),
-            attempted = mapOf(MusicSource.NETEASE to setOf(MetadataField.TITLE)),
-            downloaded = emptyMap(),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.LYRICS), fields)
-    }
+        val result = MetadataSourcesClient(netease, qq).metadata(track, options, null)
 
-    @Test
-    fun otherGroupsJoinTheBatchOnlyAfterEarlierSourcesHaveMissedThem() {
-        val fields = metadataRequestFields(
-            source = MusicSource.QQ,
-            required = setOf(MetadataField.TITLE),
-            selected = setOf(MetadataField.TITLE, MetadataField.LYRICS),
-            attempted = mapOf(MusicSource.NETEASE to setOf(MetadataField.LYRICS)),
-            downloaded = mapOf(MusicSource.NETEASE to ScrapedMetadata()),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.TITLE, MetadataField.LYRICS), fields)
-    }
-
-    @Test
-    fun fallbackDoesNotPreemptAGroupEarlierSourcesHaveNotAttempted() {
-        val fields = metadataRequestFields(
-            source = MusicSource.QQ,
-            required = setOf(MetadataField.TITLE),
-            selected = setOf(MetadataField.TITLE, MetadataField.LYRICS),
-            attempted = emptyMap(),
-            downloaded = emptyMap(),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.TITLE), fields)
-    }
-
-    @Test
-    fun availableValuesAreNotAddedAsEligibleFallbackFields() {
-        val fields = metadataRequestFields(
-            source = MusicSource.QQ,
-            required = setOf(MetadataField.ARTISTS),
-            selected = setOf(MetadataField.TITLE, MetadataField.ARTISTS),
-            attempted = mapOf(MusicSource.NETEASE to setOf(MetadataField.TITLE, MetadataField.ARTISTS)),
-            downloaded = mapOf(
-                MusicSource.NETEASE to ScrapedMetadata(
-                    title = RemoteValue.Available("t"),
-                    artists = RemoteValue.Unavailable,
-                ),
-            ),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.ARTISTS), fields)
-    }
-
-    @Test
-    fun confirmedAbsentCountsAsAMissForFallbackEligibility() {
-        val fields = metadataRequestFields(
-            source = MusicSource.QQ,
-            required = emptySet(),
-            selected = setOf(MetadataField.TITLE),
-            attempted = mapOf(MusicSource.NETEASE to setOf(MetadataField.TITLE)),
-            downloaded = mapOf(MusicSource.NETEASE to ScrapedMetadata(title = RemoteValue.ConfirmedAbsent)),
-            order = order(),
-        )
-        assertEquals(setOf(MetadataField.TITLE), fields)
-    }
-
-    @Test
-    fun sourceAbsentFromAGroupDoesNotTakeThatGroupsFieldsAsEligible() {
-        val sources = ScrapeSources(tags = sourceSelections(MusicSource.NETEASE), lyrics = sourceSelections(MusicSource.QQ))
-        val fields = metadataRequestFields(
-            source = MusicSource.QQ,
-            required = emptySet(),
-            selected = MetadataField.entries.toSet(),
-            attempted = emptyMap(),
-            downloaded = emptyMap(),
-            order = order(sources),
-        )
-        assertEquals(setOf(MetadataField.LYRICS), fields)
-    }
-
-    @Test
-    fun forcedCandidateReordersOnlyTheSearchGroup() {
-        val forced = song(MusicSource.QQ)
-        val sources = ScrapeSources()
-        assertEquals(
-            listOf(MusicSource.QQ, MusicSource.NETEASE),
-            orderedSources(MetadataGroup.TAGS, sources, forced, MetadataGroup.TAGS),
-        )
-        assertEquals(
-            listOf(MusicSource.NETEASE, MusicSource.QQ),
-            orderedSources(MetadataGroup.LYRICS, sources, forced, MetadataGroup.TAGS),
-        )
+        assertEquals(RemoteValue.Available("Primary title"), result.metadata.title)
+        assertEquals(RemoteValue.Available("Lyrics"), result.metadata.lyrics)
+        assertEquals(listOf(setOf(MetadataField.TITLE, MetadataField.LYRICS)), netease.requestedFields)
+        assertEquals(listOf(setOf(MetadataField.LYRICS)), qq.requestedFields)
     }
 }
