@@ -118,8 +118,9 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
         // Empty responses are not reliable evidence that a track has no lyrics.
         if (merged == null) return RemoteValue.Unavailable
         val lines = LyricsCodec.parse(merged).flatMap { it.lines }.map(String::trim)
-        if (lines.isEmpty() || lines.all { it in setOf("此歌曲为没有填词的纯音乐，请您欣赏", "纯音乐，请欣赏") }) {
-            return RemoteValue.Unavailable
+        if (lines.isEmpty()) return RemoteValue.Unavailable
+        if (lines.all { it in setOf("此歌曲为没有填词的纯音乐，请您欣赏", "纯音乐，请欣赏") }) {
+            return RemoteValue.ConfirmedAbsent
         }
         return RemoteValue.Available(merged)
     }

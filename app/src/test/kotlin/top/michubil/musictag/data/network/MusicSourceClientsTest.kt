@@ -110,6 +110,16 @@ class MusicSourceClientsTest {
     }
 
     @Test
+    fun qqExplicitInstrumentalNoticeConfirmsAbsentLyrics() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ,
+            lyricText = "[00:00.000]此歌曲为没有填词的纯音乐，请您欣赏")
+
+        val result = QqMusicClient(transport).metadata(candidate(MusicSource.QQ), setOf(MetadataField.LYRICS))
+
+        assertEquals(RemoteValue.ConfirmedAbsent, result.lyrics)
+    }
+
+    @Test
     fun missingTitleDoesNotDiscardLyricsOrCover() = runBlocking {
         for (source in MusicSource.entries) {
             val transport = FixtureTransport(source, detailTitle = JSONObject.NULL)

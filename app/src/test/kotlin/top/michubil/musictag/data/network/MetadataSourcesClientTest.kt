@@ -15,6 +15,8 @@ import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.match.MatchOutcome
 import top.michubil.musictag.data.match.ScrapeKind
 import top.michubil.musictag.data.match.SourceStatus
+import top.michubil.musictag.data.match.UserQuery
+import top.michubil.musictag.data.match.planWrite
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.SongCandidate
@@ -221,6 +223,38 @@ class MetadataSourcesClientTest {
     }
 
     @Test
+    fun fingerprintRecoveredSearchWritesPlatformFieldsWithoutRepeatingSearch() = runBlocking {
+        val wrong = track.copy(fileName = "random.wav", title = "Wrong title", artists = listOf("Wrong artist"),
+            album = "Wrong album")
+        val candidate = song(MusicSource.NETEASE).copy(title = "Correct song", artists = listOf("Singer"),
+            album = "Correct album")
+        val source = StubClient(MusicSource.NETEASE, { query ->
+            if (query.contains("Correct song")) listOf(candidate) else emptyList()
+        }, ScrapedMetadata(
+            title = RemoteValue.Available(candidate.title),
+            artists = RemoteValue.Available(candidate.artists),
+            album = RemoteValue.Available(candidate.album),
+        ))
+        val client = MetadataSourcesClient(source)
+        val options = ScrapeOptions(
+            policies = setOf(MetadataField.TITLE, MetadataField.ARTISTS, MetadataField.ALBUM)
+                .associateWith { FieldPolicy() },
+            sources = ScrapeSources(tags = sourceSelections(MusicSource.NETEASE)),
+        )
+        val query = UserQuery(candidate.title, candidate.artists)
+        val search = client.candidates(wrong, options, query)
+        val searches = source.searches
+
+        val result = client.metadata(wrong, options, null, search, query)
+
+        assertTrue(search.outcome is MatchOutcome.Accept)
+        assertEquals(RemoteValue.Available(candidate.title), result.metadata.title)
+        assertEquals(RemoteValue.Available(candidate.artists), result.metadata.artists)
+        assertEquals(RemoteValue.Available(candidate.album), result.metadata.album)
+        assertEquals(searches, source.searches)
+    }
+
+    @Test
     fun parallelSearchStillRejectsConflictingVersionsForFallbackFields() = runBlocking {
         val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) })
         val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ).copy(title = "title (Live)", album = "another album")) },
@@ -269,6 +303,41 @@ class MetadataSourcesClientTest {
         val result = MetadataSourcesClient(netease, qq).metadata(track.copy(album = null), options, null)
         assertEquals(ScrapeKind.COMPLETE, result.disposition.kind)
         assertEquals(RemoteValue.Available("title"), result.metadata.title)
+    }
+
+    @Test
+    fun confirmedNoLyricsAndNoOtherMatchingSongCompleteTheWrite() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
+            ScrapedMetadata(title = RemoteValue.Available("Updated title"), lyrics = RemoteValue.ConfirmedAbsent))
+        val qq = StubClient(MusicSource.QQ, { emptyList() })
+        val options = ScrapeOptions(policies = mapOf(
+            MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy(),
+        ))
+
+        val prepared = MetadataSourcesClient(netease, qq).metadata(track, options, null)
+        val write = planWrite(prepared.metadata, mapOf(MetadataField.TITLE to track.title!!),
+            hasCover = false, options = options, kept = prepared.kept)
+
+        assertEquals(RemoteValue.ConfirmedAbsent, prepared.metadata.lyrics)
+        assertEquals(ScrapeKind.COMPLETE, prepared.disposition.kind)
+        assertEquals(ScrapeKind.COMPLETE, write.disposition.kind)
+        assertEquals(0, qq.downloads)
+    }
+
+    @Test
+    fun lyricFailureForAnotherMatchingSongStillReportsPartial() = runBlocking {
+        val netease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) },
+            ScrapedMetadata(title = RemoteValue.Available("Updated title"), lyrics = RemoteValue.ConfirmedAbsent))
+        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
+            ScrapedMetadata(lyrics = RemoteValue.Unavailable))
+        val options = ScrapeOptions(policies = mapOf(
+            MetadataField.TITLE to FieldPolicy(), MetadataField.LYRICS to FieldPolicy(),
+        ))
+
+        val prepared = MetadataSourcesClient(netease, qq).metadata(track, options, null)
+
+        assertEquals(RemoteValue.Unavailable, prepared.metadata.lyrics)
+        assertEquals(ScrapeKind.PARTIAL, prepared.disposition.kind)
     }
 
     @Test

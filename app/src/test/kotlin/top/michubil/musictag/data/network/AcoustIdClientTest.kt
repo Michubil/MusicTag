@@ -39,13 +39,13 @@ class AcoustIdClientTest {
         val response = JSONObject("""{
             "results": [
                 {"score": 0.6, "recordings": [{"title": "Song", "artists": [{"name": "Artist"}]}]},
-                {"score": 0.9, "recordings": [{"title": "Song", "artists": [{"name": "Artist"}]}]},
+                {"score": 0.9, "recordings": [{"id": "recording-1", "title": "Song", "artists": [{"name": "Artist"}]}]},
                 {"score": 0.8, "recordings": [{"title": "Other", "artists": []}, {}]},
                 {"score": 1.5, "recordings": [{"title": "Invalid"}]}
             ]
         }""")
         assertEquals(
-            listOf(FingerprintSuggestion("Song", listOf("Artist"), 0.9),
+            listOf(FingerprintSuggestion("Song", listOf("Artist"), 0.9, "recording-1"),
                 FingerprintSuggestion("Other", emptyList(), 0.8)),
             AcoustIdClient.parseSuggestions(response),
         )

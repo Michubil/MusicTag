@@ -25,6 +25,7 @@ import top.michubil.musictag.data.id3.Id3Codec
 import top.michubil.musictag.data.id3.SafeMp3Editor
 import top.michubil.musictag.data.lyrics.LyricsCodec
 import top.michubil.musictag.data.match.CandidateSearch
+import top.michubil.musictag.data.match.AutomaticMatchResolver
 import top.michubil.musictag.data.match.MatchSession
 import top.michubil.musictag.data.match.ScrapeDisposition
 import top.michubil.musictag.data.match.ScrapeKind
@@ -86,6 +87,7 @@ class MusicRepository(
     private val audioFilter = AudioFileFilter(probe = { probeDuration(it) })
     private val renamer = SafFileRenamer(storage)
     private val networkSlots = Semaphore(4)
+    private val fingerprintSlots = Semaphore(1)
     private val committer = SafAudioCommitter(storage, File(context.noBackupFilesDir, "saf-writes"))
     private val commitGate = Mutex()
     private val flacEdit = Mutex()
@@ -440,8 +442,19 @@ class MusicRepository(
         return withDigestedLocalCopy(document) { file, originalDigest ->
             val track = trackForMatching(document, file)
             val reusable = session?.takeIf { it.sources == options.sources && it.policies == options.policies }
+            val automatic = if (forcedCandidate == null && reusable == null && options.policies.values.any { it.enabled }) {
+                AutomaticMatchResolver.resolve(
+                    search = { query -> networkSlots.withPermit { client.candidates(track, options, query) } },
+                    recognize = {
+                        acoustId.requireConfigured()
+                        val fingerprint = fingerprintSlots.withPermit { AudioFingerprinter.calculate(file, track.durationMs) }
+                        networkSlots.withPermit { acoustId.lookup(fingerprint) }
+                    },
+                )
+            } else null
             val prepared = networkSlots.withPermit {
-                client.metadata(track, options, forcedCandidate, reusable?.search, reusable?.query)
+                client.metadata(track, options, forcedCandidate,
+                    automatic?.search ?: reusable?.search, automatic?.query ?: reusable?.query)
             }
             if (prepared.disposition.kind != ScrapeKind.COMPLETE && prepared.disposition.kind != ScrapeKind.PARTIAL) {
                 return@withDigestedLocalCopy prepared.disposition
