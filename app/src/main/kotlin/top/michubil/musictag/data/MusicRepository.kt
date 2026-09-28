@@ -74,7 +74,7 @@ class MusicRepository(
     private val acoustId = AcoustIdClient()
 
     suspend fun recognizeAudio(document: MusicDocument): List<FingerprintSuggestion> {
-        check(acoustId.isConfigured) { "未配置 AcoustID 应用 key，请先注册并在构建时设置 ACOUSTID_CLIENT_KEY" }
+        acoustId.requireConfigured()
         val fingerprint = withLocalCopy(document) { file ->
             val duration = runCatching { readLocalTrack(file).durationMs }.getOrNull()
             AudioFingerprinter.calculate(file, duration)
@@ -339,11 +339,9 @@ class MusicRepository(
         document: MusicDocument,
         options: ScrapeOptions,
         query: UserQuery? = null,
-        prior: CandidateSearch? = null,
-        retry: MusicSource? = null,
     ): CandidateSearch {
         val track = withLocalCopy(document, previewOnly = true) { trackForMatching(document, it) }
-        return networkSlots.withPermit { client.candidates(track, options, query, prior, retry) }
+        return networkSlots.withPermit { client.candidates(track, options, query) }
     }
 
     suspend fun readRenameInputs(

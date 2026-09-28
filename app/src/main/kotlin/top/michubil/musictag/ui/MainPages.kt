@@ -17,7 +17,6 @@ import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.AlbumSort
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
-import top.michubil.musictag.data.match.SourceStatus
 import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.SourceSelection
@@ -251,15 +250,6 @@ fun CandidatesPage(state: MainUiState, model: MainViewModel) {
             )
         }
         if (state.candidateNotice != null) item { AppSupportingText(state.candidateNotice) }
-        items(state.candidateReports, key = { "source-${it.source.name}" }) { report ->
-            AppContentRow(
-                title = report.source.label,
-                summary = report.summary(),
-                icon = if (report.status == SourceStatus.FAILED) AppIcons.Error else AppIcons.Music,
-                enabled = !state.busy && report.canRetry,
-                onClick = { model.retrySource(report.source) },
-            )
-        }
         when {
             state.busy -> item { AppProgress(message = if (state.fingerprintLoading) "正在识别音频" else "正在查找匹配歌曲") }
             state.candidateError != null -> item {
@@ -270,7 +260,7 @@ fun CandidatesPage(state: MainUiState, model: MainViewModel) {
                     onAction = { model.loadCandidates() },
                 )
             }
-            state.candidates.isEmpty() && state.fingerprintSuggestions.isEmpty() -> item {
+            state.candidates.isEmpty() && state.fingerprintSuggestions.isEmpty() && state.fingerprintNotice == null -> item {
                 EmptyState(title = "没有找到候选歌曲")
             }
             else -> items(state.candidates, key = { it.candidate.key }) { result ->
@@ -285,13 +275,6 @@ fun CandidatesPage(state: MainUiState, model: MainViewModel) {
             }
         }
     }
-}
-
-private fun top.michubil.musictag.data.match.SourceReport.summary(): String = when (status) {
-    SourceStatus.READY -> listOfNotNull("$candidateCount 首候选", message).joinToString("，")
-    SourceStatus.EMPTY -> "没有结果"
-    SourceStatus.FAILED -> message ?: "暂不可用"
-    SourceStatus.INCOMPLETE -> message ?: "检索未完成"
 }
 
 @Composable

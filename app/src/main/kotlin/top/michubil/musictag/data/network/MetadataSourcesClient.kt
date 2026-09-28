@@ -45,8 +45,6 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         track: LocalTrack,
         options: ScrapeOptions,
         user: UserQuery? = null,
-        prior: CandidateSearch? = null,
-        retry: MusicSource? = null,
     ): CandidateSearch {
         val display = QueryPlan.display(track, user)
         if (options.policies.values.none { it.enabled }) {
@@ -56,12 +54,8 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             return CandidateSearch(emptyList(), emptyList(), MatchOutcome.None(reason), display.first, display.second)
         }
         val order = searchOrder(options)
-        val kept = if (retry != null && prior != null) prior.ranked.map { it.candidate }.filter { it.source != retry } else emptyList()
-        val include = if (retry != null && prior != null) listOf(retry) else order
-        val collected = collect(track, user, include, kept, order, stopWhenAccepted = retry == null)
-        val reports = if (retry != null && prior != null) {
-            prior.reports.filter { it.source != retry } + collected.reports
-        } else collected.reports
+        val collected = collect(track, user, order, emptyList(), order, stopWhenAccepted = true)
+        val reports = collected.reports
         val decision = RecordingMatch.decide(track, collected.found, user)
         val outcome = when {
             decision.outcome is MatchOutcome.None && reports.any { it.status == SourceStatus.FAILED } ->
@@ -267,9 +261,11 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         bucket.searches++
         val pageResult = attempt.getOrElse { error ->
             bucket.failed = error.message ?: "来源暂不可用"
+            bucket.consecutiveSearchFailures++
             bucket.nextPage = null
             return
         }
+        bucket.consecutiveSearchFailures = 0
         if (pageResult.issues.isNotEmpty()) bucket.issues = true
         bucket.add(pageResult.candidates)
         bucket.nextPage = pageResult.nextPage
@@ -342,13 +338,14 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         var searches = 0
         var details = 0
         var retried = false
+        var consecutiveSearchFailures = 0
         var failed: String? = null
         var incomplete = false
         var issues = false
         var detailError: String? = null
         var nextPage: Int? = null
         var nextQuery: String? = null
-        val gaveUp: Boolean get() = failed != null
+        val gaveUp: Boolean get() = consecutiveSearchFailures >= 2
 
         fun add(candidates: List<SongCandidate>) {
             for (candidate in candidates) {

@@ -5,7 +5,6 @@ import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
 import top.michubil.musictag.data.match.RankedCandidate
-import top.michubil.musictag.data.match.SourceReport
 import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.model.FieldPolicy
 import top.michubil.musictag.data.model.MetadataField
@@ -39,7 +38,6 @@ data class MainUiState(
     val policies: Map<MetadataField, FieldPolicy> = MetadataField.entries.associateWith { FieldPolicy() },
     val recursive: Boolean = false,
     val candidates: List<RankedCandidate> = emptyList(),
-    val candidateReports: List<SourceReport> = emptyList(),
     val fingerprintSuggestions: List<FingerprintSuggestion> = emptyList(),
     val fingerprintNotice: String? = null,
     val fingerprintLoading: Boolean = false,
