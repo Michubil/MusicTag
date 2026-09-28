@@ -157,6 +157,7 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
             }
             var combined: ScrapedMetadata? = null
             for (source in order(group)) {
+                if (matches[source] == null) continue
                 val needed = fields.filter { combined?.value(it) !is RemoteValue.Available && it !in kept }.toSet()
                 if (needed.isEmpty()) break
                 val data = fetch(source, needed)
@@ -164,7 +165,7 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
                 combined = merged
                 if (fields.all { merged.value(it) is RemoteValue.Available || it in kept }) break
             }
-            result = result.merge(requireNotNull(combined), fields, fallback = false)
+            result = result.merge(combined ?: ScrapedMetadata(), fields, fallback = false)
         }
         val lyrics = result.lyrics
         if (lyrics is RemoteValue.Available && timedLyricsRejected(lyrics.value, evidence)) {
