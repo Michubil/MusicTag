@@ -35,7 +35,7 @@ pwsh -NoProfile -File .\scripts\release.ps1 -Version 1.3.0
 
 工作流将原密钥恢复到 runner 临时目录，通过 `MUSICTAG_KEYSTORE_PATH` 交给 Release 构建，结束时删除。验包校验现有 Music Tag 证书指纹。
 
-音频指纹使用 AcoustID 应用 key。发布前在同一仓库 Secrets 中设置 `ACOUSTID_CLIENT_KEY`；构建时通过同名环境变量注入。PR 检查不需要 key，Release 缺失 key 时停止。应用 key 会进入 APK，不能将它视作用户私密凭据；不要把它提交到源码。本地调试可在当前 PowerShell 进程中设置该环境变量再运行已获准的构建。
+音频指纹使用 AcoustID 应用 key。发布前在同一仓库 Secrets 中设置 `ACOUSTID_CLIENT_KEY`；构建时通过同名环境变量注入。PR 检查不需要 key，Release 缺失 key 时停止。应用 key 会进入 APK，不能将它视作用户私密凭据；不要把它提交到源码。本地调试可在当前 PowerShell 进程中设置同名环境变量，或在被忽略的 `local.properties` 中设置 `acoustid.clientKey`；环境变量优先。
 
 ## 本地与 CI 共用脚本
 

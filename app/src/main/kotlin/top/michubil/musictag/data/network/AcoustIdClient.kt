@@ -14,15 +14,17 @@ internal class AcoustIdClient(
     private val transport: MusicTransport = MusicHttp,
     private val clientKey: String = BuildConfig.ACOUSTID_CLIENT_KEY,
 ) {
-    val isConfigured: Boolean get() = clientKey.isNotBlank()
+    fun requireConfigured() {
+        check(clientKey.isNotBlank()) { "当前安装包未配置音频指纹服务" }
+    }
 
     suspend fun lookup(fingerprint: AudioFingerprint): List<FingerprintSuggestion> {
-        require(clientKey.isNotBlank()) { "未配置 AcoustID 应用 key，请先注册并在构建时设置 ACOUSTID_CLIENT_KEY" }
+        requireConfigured()
         val body = mapOf(
             "client" to clientKey,
             "duration" to fingerprint.durationSeconds.toString(),
             "fingerprint" to fingerprint.value,
-            "meta" to "recordings+compress",
+            "meta" to "recordings compress",
             "format" to "json",
         ).entries.joinToString("&") { (key, value) ->
             "$key=${URLEncoder.encode(value, Charsets.UTF_8)}"

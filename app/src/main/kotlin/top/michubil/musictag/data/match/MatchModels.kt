@@ -15,9 +15,7 @@ data class SourceReport(
     val status: SourceStatus,
     val candidateCount: Int,
     val message: String? = null,
-) {
-    val canRetry: Boolean get() = status == SourceStatus.FAILED || status == SourceStatus.INCOMPLETE
-}
+)
 
 data class RankedCandidate(
     val candidate: SongCandidate,

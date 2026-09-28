@@ -348,7 +348,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         matchSession = null
         mutableState.update {
             it.copy(busy = true, fingerprintLoading = true, fingerprintNotice = null,
-                fingerprintSuggestions = emptyList(), candidates = emptyList(), candidateReports = emptyList(),
+                fingerprintSuggestions = emptyList(), candidates = emptyList(),
                 candidateNotice = null, candidateError = null)
         }
         candidateJob = viewModelScope.launch {
@@ -373,11 +373,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-    }
-
-    fun retrySource(source: MusicSource) {
-        val session = matchSession ?: return
-        loadCandidates(query = session.query, retry = source)
     }
 
     fun chooseCandidate(candidate: SongCandidate) {
@@ -421,7 +416,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!mutableState.value.busy) {
             preferences.setSources(group, selections)
             matchSession = null
-            mutableState.update { it.copy(sourceDialog = null, candidates = emptyList(), candidateReports = emptyList()) }
+            mutableState.update { it.copy(sourceDialog = null, candidates = emptyList()) }
         }
     }
 
@@ -889,7 +884,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         candidateJob?.cancel()
         candidateJob = null
         mutableState.update {
-            it.copy(candidates = emptyList(), candidateReports = emptyList(), candidateNotice = null,
+            it.copy(candidates = emptyList(), candidateNotice = null,
                 candidateError = null, fingerprintSuggestions = emptyList(), fingerprintNotice = null,
                 fingerprintLoading = false, busy = if (searching) false else it.busy)
         }
@@ -897,7 +892,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadCandidates() = loadCandidates(null)
 
-    private fun loadCandidates(documents: List<MusicDocument>? = null, query: UserQuery? = null, retry: MusicSource? = null) {
+    private fun loadCandidates(documents: List<MusicDocument>? = null, query: UserQuery? = null) {
         if (!canStartFileOperation()) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
@@ -909,7 +904,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val generation = ++searchGeneration
         candidateJob?.cancel()
         mutableState.update {
-            it.copy(busy = true, fileProgress = null, candidates = emptyList(), candidateReports = emptyList(),
+            it.copy(busy = true, fileProgress = null, candidates = emptyList(),
                 candidateNotice = null, candidateError = null, fingerprintSuggestions = emptyList(),
                 fingerprintNotice = null, fingerprintLoading = false)
         }
@@ -924,19 +919,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 effectChannel.send(MainEffect.OpenCandidates)
                 val file = files.single()
-                val previous = matchSession?.takeIf {
-                    retry != null && it.sameFile(file) && it.sources == options.sources && it.policies == options.policies
-                }
-                val effectiveQuery = query ?: previous?.query
-                val search = repository.candidates(file, options, effectiveQuery, previous?.search, retry.takeIf { previous != null })
+                val search = repository.candidates(file, options, query)
                 if (generation != searchGeneration) return@launch
                 matchSession = MatchSession(file.uri, file.size, file.modified, options.sources, options.policies,
-                    effectiveQuery, search)
+                    query, search)
                 val notice = search.outcome.summary.takeUnless { search.ranked.isNotEmpty() && search.outcome is top.michubil.musictag.data.match.MatchOutcome.Accept }
                 mutableState.update {
-                    it.copy(candidates = search.ranked, candidateReports = search.reports, candidateNotice = notice,
-                        queryTitle = if (query == null && retry == null) search.queryTitle else it.queryTitle,
-                        queryArtists = if (query == null && retry == null) search.queryArtists else it.queryArtists,
+                    it.copy(candidates = search.ranked, candidateNotice = notice,
+                        queryTitle = if (query == null) search.queryTitle else it.queryTitle,
+                        queryArtists = if (query == null) search.queryArtists else it.queryArtists,
                         busy = false)
                 }
             } catch (error: CancellationException) {

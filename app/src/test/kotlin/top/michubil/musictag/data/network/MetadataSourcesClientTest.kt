@@ -125,6 +125,29 @@ class MetadataSourcesClientTest {
     }
 
     @Test
+    fun failedArtistSearchStillAttemptsTheDistinctTitleQuery() = runBlocking {
+        val local = LocalTrack("月夜に謳う君.mp3", "月夜に謳う君 -LUNA-", listOf("宮野幸子", "森下唯"), null, null)
+        val artistQuery = "月夜に謳う君 -LUNA- 宮野幸子 森下唯"
+        val titleQuery = "月夜に謳う君 -LUNA-"
+        val searched = mutableListOf<String>()
+        val qq = StubClient(MusicSource.QQ, { query ->
+            searched += query
+            if (query == artistQuery) throw IllegalStateException("QQ search temporarily unavailable")
+            if (query == titleQuery) listOf(song(MusicSource.QQ).copy(title = titleQuery,
+                artists = local.artists)) else emptyList()
+        })
+        val options = ScrapeOptions(
+            policies = mapOf(MetadataField.TITLE to FieldPolicy()),
+            sources = ScrapeSources(tags = sourceSelections(MusicSource.QQ)),
+        )
+
+        val result = MetadataSourcesClient(qq).candidates(local, options)
+
+        assertEquals(listOf(artistQuery, titleQuery), searched)
+        assertEquals(MusicSource.QQ, result.ranked.single().candidate.source)
+    }
+
+    @Test
     fun confirmedNextPagesContinueUntilTheSourceEnds() = runBlocking {
         val requestedPages = mutableListOf<Int>()
         val qq = object : MusicSourceClient {

@@ -2,6 +2,7 @@ import org.gradle.api.JavaVersion
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.ksp)
@@ -9,7 +10,12 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-val acoustIdClientKey = providers.environmentVariable("ACOUSTID_CLIENT_KEY").orNull.orEmpty()
+val localProperties = Properties().apply {
+    providers.fileContents(rootProject.layout.projectDirectory.file("local.properties"))
+        .asText.orNull?.reader()?.use(::load)
+}
+val acoustIdClientKey = providers.environmentVariable("ACOUSTID_CLIENT_KEY").orNull
+    ?.takeIf(String::isNotBlank) ?: localProperties.getProperty("acoustid.clientKey").orEmpty()
 require(acoustIdClientKey.matches(Regex("[A-Za-z0-9]*"))) { "ACOUSTID_CLIENT_KEY must be alphanumeric" }
 
 android {
