@@ -2,6 +2,7 @@ package top.michubil.musictag.data.network
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import top.michubil.musictag.data.lyrics.LyricsCodec
 import top.michubil.musictag.data.model.CoverImage
@@ -23,18 +24,35 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
 
     override val source = MusicSource.NETEASE
 
-    override suspend fun search(query: String): List<SongCandidate> {
+    override suspend fun search(query: String, page: Int): SearchPage {
+        val offset = page * PAGE_SIZE
         val payload = JSONObject()
             .put("s", query)
             .put("type", 1)
-            .put("limit", 10)
-            .put("offset", 0)
+            .put("limit", PAGE_SIZE)
+            .put("offset", offset)
             .put("total", true)
         val root = post("/weapi/cloudsearch/pc", payload)
         val result = root.optJSONObject("result") ?: error("网易云搜索响应结构无效")
         val songs = result.optJSONArray("songs")
-        check(songs != null || result.long("songCount") == 0L) { "网易云没有返回搜索结果" }
-        return songs.objects().mapNotNull(::candidateFromSong).distinctBy { it.key }
+        if (songs == null) {
+            check(result.long("songCount") == 0L) { "网易云没有返回搜索结果" }
+            return SearchPage(emptyList())
+        }
+        val parsed = parseCandidates(songs)
+        val total = result.long("songCount")
+        val nextPage = total?.takeIf { it > offset + songs.length() }?.let { page + 1 }
+        return parsed.copy(nextPage = nextPage)
+    }
+
+    override suspend fun enrich(candidate: SongCandidate): SongCandidate {
+        require(candidate.source == source && candidate.id > 0)
+        val payload = JSONObject().put("c", "[{\"id\":${candidate.id}}]").put("ids", "[${candidate.id}]")
+        val song = post("/weapi/v3/song/detail", payload).optJSONArray("songs").objects().firstOrNull()
+            ?: error("网易云没有返回歌曲详情")
+        val detailed = candidateFromSong(song) ?: error("网易云歌曲详情结构无效")
+        check(detailed.id == candidate.id) { "网易云返回了不一致的歌曲详情" }
+        return detailed
     }
 
     override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
@@ -117,6 +135,24 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
         it == "music.126.net" || it.endsWith(".music.126.net")
     }
 
+    private fun parseCandidates(songs: JSONArray): SearchPage {
+        val issues = mutableListOf<String>()
+        val candidates = mutableListOf<SongCandidate>()
+        var rows = 0
+        for (index in 0 until songs.length()) {
+            val song = songs.optJSONObject(index)
+            if (song == null) {
+                issues += "第${index + 1}行不是歌曲对象"
+                continue
+            }
+            rows++
+            val candidate = candidateFromSong(song)
+            if (candidate == null) issues += "第${index + 1}行缺少有效字段" else candidates += candidate
+        }
+        if (rows > 0 && candidates.isEmpty()) error("网易云搜索结果无法解析")
+        return SearchPage(candidates.distinctBy(SongCandidate::key), issues = issues)
+    }
+
     private fun candidateFromSong(song: JSONObject): SongCandidate? {
         val id = song.long("id")?.takeIf { it > 0 } ?: return null
         val album = song.optJSONObject("al") ?: song.optJSONObject("album")
@@ -146,5 +182,6 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
 
     private companion object {
         const val REFERER = "https://music.163.com/"
+        const val PAGE_SIZE = 10
     }
 }

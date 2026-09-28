@@ -121,33 +121,50 @@ class MusicSourceClientsTest {
     }
 
     @Test
-    fun searchReturnsEnrichedCandidatesWithPlatformDurationUnits() = runBlocking {
+    fun searchReturnsCandidatesWithPlatformDurationUnits() = runBlocking {
         for (source in MusicSource.entries) {
             val transport = FixtureTransport(source)
-            val song = client(source, transport).search("Song").single()
+            val song = client(source, transport).search("Song").candidates.single()
             assertEquals(source, song.source)
             assertEquals(1L, song.id)
             assertEquals("Song", song.title)
             assertEquals(180000L, song.durationMs)
-            assertEquals(if (source == MusicSource.QQ) 2 else 1, transport.jsonRequests.size)
+            assertEquals(1, transport.jsonRequests.size)
         }
     }
 
     @Test
-    fun qqSearchDoesNotHideFailedCandidateEnrichment() {
-        val transport = FixtureTransport(MusicSource.QQ, detailId = 999)
+    fun qqSearchDoesNotHideMalformedCandidate() {
+        val transport = FixtureTransport(MusicSource.QQ, detailTitle = JSONObject.NULL)
         assertThrows(IllegalStateException::class.java) {
             runBlocking { QqMusicClient(transport).search("Song") }
         }
     }
 
     @Test
-    fun qqSearchKeepsEveryDistinctCandidateAndFetchesItsOwnDetails() = runBlocking {
-        val transport = FixtureTransport(MusicSource.QQ, smartboxIds = listOf(2, 1, 2))
-        val songs = QqMusicClient(transport).search("Song")
+    fun qqFullSearchTreatsAnEmptySongListAsNoCandidates() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ, searchIds = emptyList())
+        assertTrue(QqMusicClient(transport).search("Song").candidates.isEmpty())
+        assertEquals(1, transport.jsonRequests.size)
+    }
+
+    @Test
+    fun qqFullSearchRemovesHighlightMarkupFromCandidateTitle() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ, detailTitle = "<em>Song</em>")
+        assertEquals("Song", QqMusicClient(transport).search("Song").candidates.single().title)
+    }
+
+    @Test
+    fun qqSearchKeepsEveryDistinctCandidateFromFullSongSearch() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ, searchIds = listOf(2, 1, 2))
+        val songs = QqMusicClient(transport).search("Song").candidates
         assertEquals(listOf(2L, 1L), songs.map { it.id })
         assertTrue(songs.all { it.source == MusicSource.QQ && it.durationMs == 180000L })
-        assertEquals(3, transport.jsonRequests.size)
+        assertEquals(1, transport.jsonRequests.size)
+        val request = requireNotNull(transport.searchRequest)
+        assertEquals("Song", request.getString("query"))
+        assertEquals(15, request.getInt("num_per_page"))
+        assertEquals(1, request.getInt("page_num"))
     }
 
     private fun client(source: MusicSource, transport: MusicTransport): MusicSourceClient = when (source) {
@@ -170,12 +187,13 @@ class MusicSourceClientsTest {
         val lyricFailure: Throwable? = null,
         val coverFailure: Throwable? = null,
         val detailId: Long? = null,
-        val smartboxIds: List<Long> = listOf(1, 1),
+        val searchIds: List<Long> = listOf(1, 1),
         val detailTitle: Any = "Song",
         val lyricCode: Any = if (source == MusicSource.NETEASE) 200 else 0,
         val lyricText: String = "[00:01.000]Hello",
     ) : MusicTransport {
         val jsonRequests = mutableListOf<String>()
+        var searchRequest: JSONObject? = null
         var coverRequests = 0
         val image = CoverImage(byteArrayOf(1), "image/jpeg", 1, 1)
 
@@ -184,11 +202,6 @@ class MusicSourceClientsTest {
             jsonRequests += url
             if ("cloudsearch" in url) {
                 return JSONObject("""{"code":200,"result":{"songs":[{"id":1,"name":" Song ","dt":180000}]}}""")
-            }
-            if ("smartbox" in url) {
-                val items = org.json.JSONArray()
-                smartboxIds.forEach { items.put(JSONObject().put("id", it.toString())) }
-                return JSONObject().put("code", 0).put("data", JSONObject().put("song", JSONObject().put("itemlist", items)))
             }
             if ("lyric" in url) {
                 lyricFailure?.let { throw it }
@@ -201,6 +214,25 @@ class MusicSourceClientsTest {
             }
             check(url.endsWith("/weapi/v3/song/detail") || url.endsWith("/cgi-bin/musicu.fcg")) {
                 "Unexpected request: $url"
+            }
+            if (source == MusicSource.QQ && body != null) {
+                val payload = JSONObject(body.toString(Charsets.UTF_8))
+                val request = payload.optJSONObject("music.search.SearchCgiService.DoSearchForQQMusicDesktop")
+                if (request != null) {
+                    check(request.string("module") == "music.search.SearchCgiService")
+                    check(request.string("method") == "DoSearchForQQMusicDesktop")
+                    check(payload.optJSONObject("comm")?.long("ct") == 6L)
+                    searchRequest = request.getJSONObject("param")
+                    val items = org.json.JSONArray()
+                    searchIds.forEach { id ->
+                        items.put(JSONObject().put("id", id).put("title", detailTitle).put("interval", 180)
+                            .put("singer", org.json.JSONArray().put(JSONObject().put("name", "Artist")))
+                            .put("album", JSONObject().put("id", 2).put("title", "Album")))
+                    }
+                    return JSONObject().put("code", 0)
+                        .put("music.search.SearchCgiService.DoSearchForQQMusicDesktop", JSONObject().put("code", 0)
+                            .put("data", JSONObject().put("body", JSONObject().put("song", JSONObject().put("list", items)))))
+                }
             }
             detailFailure?.let { throw it }
             val requestedId = if (source == MusicSource.QQ) {

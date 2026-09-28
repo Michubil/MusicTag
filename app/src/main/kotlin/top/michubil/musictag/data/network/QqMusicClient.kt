@@ -5,12 +5,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import org.json.JSONArray
 import org.json.JSONObject
 import top.michubil.musictag.data.lyrics.LyricsCodec
 import top.michubil.musictag.data.model.*
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import java.util.UUID
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
@@ -25,26 +27,26 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
     private val requestGap = 300.milliseconds
     private var nextAllowed = TimeSource.Monotonic.markNow()
 
-    override suspend fun search(query: String): List<SongCandidate> {
-        val keyword = URLEncoder.encode(query, StandardCharsets.UTF_8)
-        val root = limited {
-            transport.json("https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?format=json&key=$keyword",
-                REFERER, source.label)
-        }
-        check(root.long("code") == 0L && (!root.has("subcode") || root.long("subcode") == 0L)) {
-            "QQ 音乐搜索接口暂不可用"
-        }
-        val songs = root.optJSONObject("data")?.optJSONObject("song")?.optJSONArray("itemlist")
-            ?: error("QQ 音乐搜索响应结构无效")
-        val ids = List(songs.length()) { index ->
-            songs.optJSONObject(index)?.long("id")?.takeIf { it > 0 }
-                ?: error("QQ 音乐歌曲标识无效")
-        }.distinct()
-        // Quick search lacks album and duration. Enrich every candidate before ranking;
-        // a failed detail request must not hide an alternative recording from the matcher.
-        return ids.map { id ->
-            candidateFromSong(fetchSongDetail(id)) ?: error("QQ 音乐歌曲详情结构无效")
-        }
+    override suspend fun search(query: String, page: Int): SearchPage {
+        val module = "music.search.SearchCgiService"
+        val method = "DoSearchForQQMusicDesktop"
+        val pageNum = page + 1
+        val params = JSONObject().put("query", query).put("num_per_page", PAGE_SIZE).put("page_num", pageNum)
+            .put("remoteplace", "txt.mac.search").put("search_type", 0).put("grp", 1)
+            .put("searchid", UUID.randomUUID().toString()).put("nqc_flag", 0)
+        val data = cgi(module, method, params, "$module.$method",
+            JSONObject().put("ct", 6).put("cv", 80600).put("tmeAppID", "qqmusic"))
+        val songObject = data.optJSONObject("body")?.optJSONObject("song") ?: error("QQ 音乐搜索响应结构无效")
+        val songs = songObject.optJSONArray("list") ?: error("QQ 音乐搜索响应结构无效")
+        val parsed = parseCandidates(songs)
+        val total = songObject.long("totalnum")
+        val nextPage = total?.takeIf { it > pageNum.toLong() * PAGE_SIZE }?.let { page + 1 }
+        return parsed.copy(nextPage = nextPage)
+    }
+
+    override suspend fun enrich(candidate: SongCandidate): SongCandidate {
+        require(candidate.source == source && candidate.id > 0)
+        return candidateFromSong(fetchSongDetail(candidate.id)) ?: candidate
     }
 
     override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
@@ -122,14 +124,17 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
         return RemoteValue.Available(merged)
     }
 
-    private suspend fun cgi(module: String, method: String, params: JSONObject): JSONObject {
-        val payload = JSONObject().put(module, JSONObject().put("module", module).put("method", method).put("param", params))
-            .put("comm", JSONObject().put("ct", 24).put("cv", 0).put("uin", 0)
-                .put("format", "json").put("g_tk", 5381).put("platform", "yqq.json"))
+    private suspend fun cgi(module: String, method: String, params: JSONObject,
+        requestKey: String = module,
+        comm: JSONObject = JSONObject().put("ct", 24).put("cv", 0).put("uin", 0)
+            .put("format", "json").put("g_tk", 5381).put("platform", "yqq.json"),
+    ): JSONObject {
+        val payload = JSONObject().put(requestKey, JSONObject().put("module", module).put("method", method).put("param", params))
+            .put("comm", comm)
         val root = limited { transport.json("https://u.y.qq.com/cgi-bin/musicu.fcg", REFERER, source.label,
             payload.toString().toByteArray(Charsets.UTF_8)) }
         check(!root.has("code") || root.long("code") == 0L) { "QQ 音乐接口暂不可用" }
-        val response = root.optJSONObject(module) ?: error("QQ 音乐接口响应结构无效")
+        val response = root.optJSONObject(requestKey) ?: error("QQ 音乐接口响应结构无效")
         check(response.long("code") == 0L) { "QQ 音乐接口暂不可用，请稍后重试" }
         return response.optJSONObject("data") ?: error("QQ 音乐没有返回数据")
     }
@@ -143,6 +148,24 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
         block()
     }
 
+    private fun parseCandidates(songs: JSONArray): SearchPage {
+        val issues = mutableListOf<String>()
+        val candidates = mutableListOf<SongCandidate>()
+        var rows = 0
+        for (index in 0 until songs.length()) {
+            val song = songs.optJSONObject(index)
+            if (song == null) {
+                issues += "第${index + 1}行不是歌曲对象"
+                continue
+            }
+            rows++
+            val candidate = candidateFromSong(song)
+            if (candidate == null) issues += "第${index + 1}行缺少有效字段" else candidates += candidate
+        }
+        if (rows > 0 && candidates.isEmpty()) error("QQ 音乐搜索结果无法解析")
+        return SearchPage(candidates.distinctBy(SongCandidate::key), issues = issues)
+    }
+
     private fun candidateFromSong(song: JSONObject): SongCandidate? {
         val id = song.long("id")?.takeIf { it > 0 } ?: return null
         val title = song.string("title") ?: song.string("name") ?: return null
@@ -150,9 +173,9 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
         val albumMid = album?.string("mid")?.takeIf(MID::matches) ?: album?.string("pmid")?.takeIf(MID::matches)
         return SongCandidate(
             id = id,
-            title = unescape(title).replace(Regex("</?em>"), ""),
-            artists = song.optJSONArray("singer").objects().mapNotNull { it.string("name")?.let(::unescape) },
-            album = album?.string("title")?.let(::unescape) ?: album?.string("name")?.let(::unescape).orEmpty(),
+            title = plainText(title),
+            artists = song.optJSONArray("singer").objects().mapNotNull { it.string("name")?.let(::plainText) },
+            album = (album?.string("title") ?: album?.string("name"))?.let(::plainText).orEmpty(),
             albumId = album?.long("id")?.takeIf { it > 0 },
             durationMs = song.long("interval")?.takeIf { it in 1..86_400 }?.times(1000),
             coverUrl = albumMid?.let { "https://y.gtimg.cn/music/photo_new/T002R800x800M000$it.jpg" },
@@ -163,6 +186,8 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
         )
     }
 
+    private fun plainText(value: String): String = unescape(value).replace(EM_TAG, "")
+
     private fun unescape(value: String): String = Regex("&#(x[0-9a-fA-F]+|[0-9]+);").replace(value) { match ->
         val code = match.groupValues[1].let { if (it.startsWith('x')) it.drop(1).toIntOrNull(16) else it.toIntOrNull() }
         if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else match.value
@@ -170,6 +195,8 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
 
     private companion object {
         const val REFERER = "https://y.qq.com/"
+        const val PAGE_SIZE = 15
         val MID = Regex("[A-Za-z0-9]+")
+        val EM_TAG = Regex("</?em>")
     }
 }

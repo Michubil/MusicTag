@@ -17,10 +17,10 @@ import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.AlbumSort
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
+import top.michubil.musictag.data.match.SourceStatus
 import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.MetadataGroup
-import top.michubil.musictag.data.model.SourceOrder
-import kotlin.math.roundToInt
+import top.michubil.musictag.data.model.SourceSelection
 
 @Composable
 fun BrowserPage(state: MainUiState, model: MainViewModel, loadPreviews: Boolean = true) {
@@ -162,6 +162,18 @@ fun OptionsPage(state: MainUiState, model: MainViewModel) {
     val enabledPolicies = state.policies.values.filter { it.enabled }
     AppContentList {
         if (state.busy) item { AppProgress() }
+        if (state.unresolved.isNotEmpty()) {
+            item { AppSupportingText("本次还有 ${state.unresolved.size} 个文件待处理") }
+            items(state.unresolved, key = { it.document.uri }) { match ->
+                AppContentRow(
+                    title = match.document.name,
+                    summary = match.reason,
+                    icon = AppIcons.Error,
+                    onClick = { model.openUnresolved(match) },
+                    enabled = !state.busy,
+                )
+            }
+        }
         item {
             PreferenceGroup {
                 item {
@@ -200,9 +212,56 @@ fun OptionsPage(state: MainUiState, model: MainViewModel) {
 
 @Composable
 fun CandidatesPage(state: MainUiState, model: MainViewModel) {
+    var title by remember(state.queryTitle) { mutableStateOf(state.queryTitle) }
+    var artists by remember(state.queryArtists) { mutableStateOf(state.queryArtists) }
     AppContentList {
+        item {
+            AppTextField(title, "标题", !state.busy) { title = it }
+        }
+        item {
+            AppTextField(artists, "艺术家", !state.busy) { artists = it }
+        }
+        item {
+            AppContentRow(
+                title = "按此查询",
+                summary = "只改变本次搜索，不修改文件标签",
+                icon = AppIcons.Search,
+                enabled = !state.busy && title.isNotBlank(),
+                onClick = { model.searchCandidates(title, artists) },
+            )
+        }
+        item {
+            AppContentRow(
+                title = "用音频指纹识别",
+                summary = "读取当前文件的音频并查询录音线索",
+                icon = AppIcons.Music,
+                enabled = !state.busy,
+                onClick = model::recognizeAudio,
+            )
+        }
+        if (state.fingerprintNotice != null) item { AppSupportingText(state.fingerprintNotice) }
+        items(state.fingerprintSuggestions, key = { "fingerprint-${it.title}-${it.artists.joinToString()}" }) { suggestion ->
+            AppContentRow(
+                title = suggestion.title,
+                summary = suggestion.artists.joinToString(" / ").ifBlank { "艺术家未知" },
+                details = "以此线索搜索平台候选",
+                icon = AppIcons.Search,
+                enabled = !state.busy,
+                onClick = { model.searchFingerprintSuggestion(suggestion) },
+            )
+        }
+        if (state.candidateNotice != null) item { AppSupportingText(state.candidateNotice) }
+        items(state.candidateReports, key = { "source-${it.source.name}" }) { report ->
+            AppContentRow(
+                title = report.source.label,
+                summary = report.summary(),
+                icon = if (report.status == SourceStatus.FAILED) AppIcons.Error else AppIcons.Music,
+                enabled = !state.busy && report.canRetry,
+                onClick = { model.retrySource(report.source) },
+            )
+        }
         when {
-            state.busy -> item { AppProgress(message = "正在查找匹配歌曲") }
+            state.busy -> item { AppProgress(message = if (state.fingerprintLoading) "正在识别音频" else "正在查找匹配歌曲") }
             state.candidateError != null -> item {
                 ErrorState(
                     title = "无法获取候选歌曲",
@@ -211,18 +270,28 @@ fun CandidatesPage(state: MainUiState, model: MainViewModel) {
                     onAction = { model.loadCandidates() },
                 )
             }
-            state.candidates.isEmpty() -> item { EmptyState(title = "没有找到候选歌曲") }
+            state.candidates.isEmpty() && state.fingerprintSuggestions.isEmpty() -> item {
+                EmptyState(title = "没有找到候选歌曲")
+            }
             else -> items(state.candidates, key = { it.candidate.key }) { result ->
                 AppContentRow(
                     title = result.candidate.title,
-                    summary = result.candidate.artists.joinToString(" / "),
-                    details = "${result.candidate.album} · ${result.candidate.source.label} · 匹配度 ${(result.confidence * 100).roundToInt()}%",
+                    summary = result.candidate.artists.joinToString(" / ").ifEmpty { "艺术家未知" },
+                    details = listOf(result.candidate.album, result.candidate.source.label, result.explanations.joinToString("，"))
+                        .filter { it.isNotBlank() }.joinToString(" · "),
                     icon = AppIcons.Music,
                     onClick = { model.chooseCandidate(result.candidate) },
                 )
             }
         }
     }
+}
+
+private fun top.michubil.musictag.data.match.SourceReport.summary(): String = when (status) {
+    SourceStatus.READY -> listOfNotNull("$candidateCount 首候选", message).joinToString("，")
+    SourceStatus.EMPTY -> "没有结果"
+    SourceStatus.FAILED -> message ?: "暂不可用"
+    SourceStatus.INCOMPLETE -> message ?: "检索未完成"
 }
 
 @Composable
@@ -234,7 +303,7 @@ fun SettingsPage(state: MainUiState, model: MainViewModel) {
                     item {
                         SettingChoiceRow(
                             title = group.label,
-                            value = state.scrapeSources[group].label,
+                            value = state.scrapeSources[group].summary(),
                             icon = if (group == MetadataGroup.LYRICS) AppIcons.Lyrics else AppIcons.Music,
                             enabled = !state.busy,
                             onClick = { model.showSourceDialog(group) },
@@ -243,7 +312,7 @@ fun SettingsPage(state: MainUiState, model: MainViewModel) {
                 }
             }
         }
-        item { AppSupportingText("组合包含标题、艺术家、专辑、日期及编号。按所选顺序查询，前一个源缺少内容时再尝试下一个。") }
+        item { AppSupportingText("组合包含标题、艺术家、专辑、日期及编号。搜索会查询开启的来源；可靠结果优先于列表顺序。可以全部关闭。") }
         item {
             PreferenceGroup(title = "音频过滤") {
                 item {
@@ -379,14 +448,25 @@ fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Bo
     var sortDraft by remember(state.sortDialog) { mutableStateOf(state.fileSort) }
     var sortDescendingDraft by remember(state.sortDialog) { mutableStateOf(state.sortDescending) }
     MetadataGroup.entries.forEach { group ->
-        AppSingleChoiceDialog(
+        val selections = state.scrapeSources[group]
+        AppOrderDraftDialog(
             visible = state.sourceDialog == group && settingsVisible,
             title = group.label,
-            options = SourceOrder.entries.map { AppChoiceOption(it, it.label) },
-            selectedValue = state.scrapeSources[group],
+            items = selections.map { AppOrderItem(it.source.name, it.source.label, it.enabled) },
             enabled = !state.busy,
-            onSelect = { model.setSourceOrder(group, it) },
+            confirmLabel = "确定",
+            dismissLabel = "取消",
+            moveUpLabel = "上移",
+            moveDownLabel = "下移",
+            dragLabel = "拖动排序",
             onDismissRequest = { model.dismissSourceDialog() },
+            onConfirm = { draft ->
+                val known = draft.mapNotNull { item ->
+                    val source = top.michubil.musictag.data.model.MusicSource.entries.firstOrNull { it.name == item.id }
+                    source?.let { SourceSelection(it, item.enabled) }
+                }
+                model.saveSources(group, known)
+            },
         )
     }
     AppSingleChoiceDialog(
@@ -461,3 +541,9 @@ private val FileSort.label: String
         FileSort.TYPE -> "类型"
         FileSort.MODIFIED -> "修改时间"
     }
+
+private fun List<SourceSelection>.summary(): String {
+    val enabled = filter { it.enabled }
+    if (enabled.isEmpty()) return "未开启"
+    return enabled.joinToString("、") { it.source.label }
+}

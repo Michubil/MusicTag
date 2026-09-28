@@ -25,12 +25,17 @@ import kotlinx.coroutines.withContext
 import top.michubil.musictag.data.AppPreferences
 import top.michubil.musictag.data.MusicRepository
 import top.michubil.musictag.data.ThemeMode
+import top.michubil.musictag.data.match.MatchSession
+import top.michubil.musictag.data.match.ScrapeKind
+import top.michubil.musictag.data.match.UserQuery
 import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.MetadataGroup
-import top.michubil.musictag.data.model.SourceOrder
+import top.michubil.musictag.data.model.MusicSource
+import top.michubil.musictag.data.model.SourceSelection
 import top.michubil.musictag.data.rename.RenamePreset
 import top.michubil.musictag.data.model.ScrapeOptions
 import top.michubil.musictag.data.model.SongCandidate
+import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.storage.MusicDocument
 import top.michubil.musictag.data.rename.FilenameTemplate
 import top.michubil.musictag.data.rename.RenameInputs
@@ -69,6 +74,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var libraryJob: Job? = null
     private val libraryIndex = MutableStateFlow<LibraryIndex?>(null)
     private var candidateJob: Job? = null
+    private var searchGeneration = 0
+    private var matchSession: MatchSession? = null
     private var authorizationJob: Job? = null
     private var updateJob: Job? = null
     private var renameReadJob: Job? = null
@@ -315,11 +322,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setRecursive(enabled: Boolean) { if (!mutableState.value.busy) preferences.setRecursive(enabled) }
 
-    fun startAutomatic() { startScraping(null) }
+    fun startAutomatic() { startScraping(null, null) }
+
+    fun openUnresolved(match: UnresolvedMatch) {
+        mutableState.update { it.copy(selected = setOf(match.document.uri)) }
+        loadCandidates(listOf(match.document))
+    }
+
+    fun searchCandidates(title: String, artists: String) {
+        val parsed = artists.split(Regex("[\\n、]")).map(String::trim).filter(String::isNotEmpty).ifEmpty {
+            top.michubil.musictag.data.match.splitArtistValue(artists) ?: listOfNotNull(artists.trim().takeIf(String::isNotEmpty))
+        }
+        loadCandidates(query = UserQuery(title.trim(), parsed))
+    }
+
+    fun searchFingerprintSuggestion(suggestion: FingerprintSuggestion) {
+        loadCandidates(query = UserQuery(suggestion.title, suggestion.artists))
+    }
+
+    fun recognizeAudio() {
+        if (!canStartFileOperation()) return
+        val snapshot = mutableState.value
+        val generation = ++searchGeneration
+        candidateJob?.cancel()
+        matchSession = null
+        mutableState.update {
+            it.copy(busy = true, fingerprintLoading = true, fingerprintNotice = null,
+                fingerprintSuggestions = emptyList(), candidates = emptyList(), candidateReports = emptyList(),
+                candidateNotice = null, candidateError = null)
+        }
+        candidateJob = viewModelScope.launch {
+            try {
+                val files = withContext(LocalFileWork.dispatcher) {
+                    repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
+                }
+                require(files.size == 1) { "指纹识别时请选择一个音频文件" }
+                val suggestions = repository.recognizeAudio(files.single())
+                if (generation != searchGeneration) return@launch
+                mutableState.update {
+                    it.copy(busy = false, fingerprintLoading = false, fingerprintSuggestions = suggestions,
+                        fingerprintNotice = if (suggestions.isEmpty()) "指纹库没有可用的录音信息" else
+                            "指纹只提供录音线索；请选择结果搜索平台歌曲，再确认具体候选和发行")
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (generation != searchGeneration) return@launch
+                mutableState.update {
+                    it.copy(busy = false, fingerprintLoading = false, fingerprintNotice = error.userMessage())
+                }
+            }
+        }
+    }
+
+    fun retrySource(source: MusicSource) {
+        val session = matchSession ?: return
+        loadCandidates(query = session.query, retry = source)
+    }
 
     fun chooseCandidate(candidate: SongCandidate) {
         if (mutableState.value.candidates.any { it.candidate == candidate }) {
-            startScraping(candidate)
+            startScraping(candidate, matchSession)
         }
     }
 
@@ -354,10 +417,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissSourceDialog() { mutableState.update { it.copy(sourceDialog = null) } }
 
-    fun setSourceOrder(group: MetadataGroup, order: SourceOrder) {
+    fun saveSources(group: MetadataGroup, selections: List<SourceSelection>) {
         if (!mutableState.value.busy) {
-            preferences.setSourceOrder(group, order)
-            mutableState.update { it.copy(sourceDialog = null, candidates = emptyList()) }
+            preferences.setSources(group, selections)
+            matchSession = null
+            mutableState.update { it.copy(sourceDialog = null, candidates = emptyList(), candidateReports = emptyList()) }
         }
     }
 
@@ -820,20 +884,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelCandidateSearch() {
+        searchGeneration++
         val searching = candidateJob?.isActive == true
         candidateJob?.cancel()
         candidateJob = null
-        mutableState.update { it.copy(candidates = emptyList(), candidateError = null, busy = if (searching) false else it.busy) }
+        mutableState.update {
+            it.copy(candidates = emptyList(), candidateReports = emptyList(), candidateNotice = null,
+                candidateError = null, fingerprintSuggestions = emptyList(), fingerprintNotice = null,
+                fingerprintLoading = false, busy = if (searching) false else it.busy)
+        }
     }
 
-    fun loadCandidates() {
+    fun loadCandidates() = loadCandidates(null)
+
+    private fun loadCandidates(documents: List<MusicDocument>? = null, query: UserQuery? = null, retry: MusicSource? = null) {
         if (!canStartFileOperation()) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
-        mutableState.update { it.copy(busy = true, fileProgress = null, candidates = emptyList(), candidateError = null) }
+        val options = snapshot.toScrapeOptions()
+        repository.blockedMessage(options)?.let { reason ->
+            mutableState.update { it.copy(message = reason) }
+            return
+        }
+        val generation = ++searchGeneration
+        candidateJob?.cancel()
+        mutableState.update {
+            it.copy(busy = true, fileProgress = null, candidates = emptyList(), candidateReports = emptyList(),
+                candidateNotice = null, candidateError = null, fingerprintSuggestions = emptyList(),
+                fingerprintNotice = null, fingerprintLoading = false)
+        }
         candidateJob = viewModelScope.launch {
             try {
-                val files = withContext(LocalFileWork.dispatcher) {
+                val files = documents ?: withContext(LocalFileWork.dispatcher) {
                     repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
                 }
                 if (files.size != 1) {
@@ -841,20 +923,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 effectChannel.send(MainEffect.OpenCandidates)
-                val candidates = repository.candidates(files.single(), snapshot.toScrapeOptions())
-                mutableState.update { it.copy(candidates = candidates, busy = false) }
+                val file = files.single()
+                val previous = matchSession?.takeIf {
+                    retry != null && it.sameFile(file) && it.sources == options.sources && it.policies == options.policies
+                }
+                val effectiveQuery = query ?: previous?.query
+                val search = repository.candidates(file, options, effectiveQuery, previous?.search, retry.takeIf { previous != null })
+                if (generation != searchGeneration) return@launch
+                matchSession = MatchSession(file.uri, file.size, file.modified, options.sources, options.policies,
+                    effectiveQuery, search)
+                val notice = search.outcome.summary.takeUnless { search.ranked.isNotEmpty() && search.outcome is top.michubil.musictag.data.match.MatchOutcome.Accept }
+                mutableState.update {
+                    it.copy(candidates = search.ranked, candidateReports = search.reports, candidateNotice = notice,
+                        queryTitle = if (query == null && retry == null) search.queryTitle else it.queryTitle,
+                        queryArtists = if (query == null && retry == null) search.queryArtists else it.queryArtists,
+                        busy = false)
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
+                if (generation != searchGeneration) return@launch
                 mutableState.update { it.copy(busy = false, candidateError = error.userMessage(), message = error.userMessage()) }
             }
         }
     }
 
-    private fun startScraping(candidate: SongCandidate?) {
+    private fun startScraping(candidate: SongCandidate?, session: MatchSession?) {
         if (!canStartFileOperation()) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
+        val options = snapshot.toScrapeOptions()
+        repository.blockedMessage(options)?.let { reason ->
+            mutableState.update { it.copy(message = reason) }
+            return
+        }
         mutableState.update { it.copy(busy = true, fileProgress = null) }
         fileWork.launch {
             try {
@@ -867,14 +969,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 mutableState.update { it.copy(selected = emptySet(), fileProgress = ScanProgress(0, files.size)) }
                 effectChannel.send(MainEffect.ReturnToBrowser)
-                val outcomes = mapFileResults(files, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { file ->
-                    repository.scrape(file, snapshot.toScrapeOptions(), candidate)
+                val outcomes = LocalFileWork.map(files, onProgress = { progress ->
+                    mutableState.update { it.copy(fileProgress = progress) }
+                }) { file ->
+                    try {
+                        val activeSession = session?.takeIf { candidate != null && it.sameFile(file) }
+                        repository.scrape(file, options, candidate, activeSession)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        top.michubil.musictag.data.match.ScrapeDisposition(ScrapeKind.FAILED, error.userMessage())
+                    }
                 }
-                val (successCount, failures) = summarizeFileResults(files, outcomes) { it.name }
-                val message = if (failures.isEmpty()) "刮削完成：成功 $successCount 个" else
-                    "刮削结束：成功 $successCount 个，未完成 ${failures.size} 个。\n${failures.first()}"
+                val counts = outcomes.groupingBy { it.kind }.eachCount()
+                val unresolved = files.zip(outcomes).mapNotNull { (file, outcome) ->
+                    if (outcome.kind == ScrapeKind.REVIEW || outcome.kind == ScrapeKind.FAILED) {
+                        UnresolvedMatch(file, outcome.reason ?: file.name)
+                    } else null
+                }
+                val message = "刮削结束：完成 ${counts[ScrapeKind.COMPLETE] ?: 0}，部分 ${counts[ScrapeKind.PARTIAL] ?: 0}，" +
+                    "未更改 ${counts[ScrapeKind.UNCHANGED] ?: 0}，待复核 ${counts[ScrapeKind.REVIEW] ?: 0}，失败 ${counts[ScrapeKind.FAILED] ?: 0}" +
+                    (unresolved.firstOrNull()?.let { "\n${it.document.name}：${it.reason}" }.orEmpty())
                 cancelPreviewLoads()
-                mutableState.update { it.copy(message = message) }
+                mutableState.update { it.copy(message = message, unresolved = unresolved) }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {

@@ -38,6 +38,12 @@ try {
         foreach ($notice in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
             if (-not $archive.GetEntry("assets/licenses/androidgui/$notice")) { throw "Missing packaged license/attribution: $notice" }
         }
+        foreach ($notice in @('LICENSE.md', 'LGPL-2.1.txt', 'KISSFFT-BSD-3-Clause')) {
+            if (-not $archive.GetEntry("assets/licenses/chromaprint/$notice")) { throw "Missing fingerprint license: $notice" }
+        }
+        foreach ($library in @('chromaprint', 'musictag_fingerprint')) {
+            if (-not $archive.GetEntry("lib/arm64-v8a/lib$library.so")) { throw "Missing ARM64 fingerprint library: $library" }
+        }
         foreach ($entry in $archive.Entries) {
             $name = $entry.FullName
             if ($name -match '(^|/)\.local-signing/|(^|/)([^/]+\.(keystore|jks)|keystore\.properties|\.env(\.[^/]*)?|DebugProbesKt\.bin)$') {

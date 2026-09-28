@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.ScrapeSources
-import top.michubil.musictag.data.model.SourceOrder
+import top.michubil.musictag.data.model.SourceSelection
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class FileSort { NAME, TYPE, MODIFIED }
@@ -63,13 +63,13 @@ class AppPreferences(context: Context) {
         persist { putBoolean("recursive", enabled) }
     }
 
-    fun setSourceOrder(group: MetadataGroup, order: SourceOrder) {
-        persist { putString("source_${group.name.lowercase(java.util.Locale.ROOT)}", order.name) }
+    fun setSources(group: MetadataGroup, selections: List<SourceSelection>) {
+        persist {
+            putString(sourceKey(group), SourceSelections.encode(selections))
+            putBoolean(SOURCES_MIGRATED, true)
+            remove(legacySourceKey(group))
+        }
     }
-
-    private fun sourceOrder(group: MetadataGroup): SourceOrder = SourceOrder.entries.firstOrNull {
-        it.name == storage.getString("source_${group.name.lowercase(java.util.Locale.ROOT)}", null)
-    } ?: SourceOrder.NETEASE_FIRST
 
     fun setAudioFilters(filters: AudioFilters) {
         persist {
@@ -99,10 +99,38 @@ class AppPreferences(context: Context) {
         formatLyricsTimeline = storage.getBoolean("format_lyrics_timeline", true),
         recursive = storage.getBoolean("recursive", false),
         storageTreeUri = storage.getString("storage_tree_uri", null),
-        scrapeSources = ScrapeSources(sourceOrder(MetadataGroup.TAGS), sourceOrder(MetadataGroup.LYRICS), sourceOrder(MetadataGroup.COVER)),
+        scrapeSources = loadSources(),
         audioFilters = AudioFilters(
             storage.getInt("minimum_audio_seconds", 0),
             AudioFilters.parsePaths(storage.getString("excluded_folder_paths", "").orEmpty()),
         ),
     )
+
+    private fun loadSources(): ScrapeSources {
+        val stored = MetadataGroup.entries.associateWith { SourceSelections.decode(storage.getString(sourceKey(it), null)) }
+        if (storage.getBoolean(SOURCES_MIGRATED, false) && stored.values.all { it != null }) {
+            return ScrapeSources(requireNotNull(stored.getValue(MetadataGroup.TAGS)),
+                requireNotNull(stored.getValue(MetadataGroup.LYRICS)), requireNotNull(stored.getValue(MetadataGroup.COVER)))
+        }
+        val sources = ScrapeSources(
+            stored[MetadataGroup.TAGS] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.TAGS), null)),
+            stored[MetadataGroup.LYRICS] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.LYRICS), null)),
+            stored[MetadataGroup.COVER] ?: SourceSelections.migrate(storage.getString(legacySourceKey(MetadataGroup.COVER), null)),
+        )
+        val editor = storage.edit()
+        MetadataGroup.entries.forEach { group ->
+            editor.putString(sourceKey(group), SourceSelections.encode(sources[group]))
+            editor.remove(legacySourceKey(group))
+        }
+        check(editor.putBoolean(SOURCES_MIGRATED, true).commit()) { "无法保存音乐来源设置" }
+        return sources
+    }
+
+    private fun sourceKey(group: MetadataGroup) = "sources_${group.name.lowercase(java.util.Locale.ROOT)}"
+
+    private fun legacySourceKey(group: MetadataGroup) = "source_${group.name.lowercase(java.util.Locale.ROOT)}"
+
+    private companion object {
+        const val SOURCES_MIGRATED = "sources_migrated"
+    }
 }
