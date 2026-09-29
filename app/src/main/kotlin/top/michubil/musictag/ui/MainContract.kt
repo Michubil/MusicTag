@@ -1,6 +1,7 @@
 package top.michubil.musictag.ui
 
 import top.michubil.musictag.data.AudioFilters
+import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
@@ -15,6 +16,11 @@ import top.michubil.musictag.data.AlbumGroup
 import top.michubil.musictag.data.AppRelease
 import top.michubil.musictag.data.AlbumSort
 
+enum class MainDialog { DURATION, PATH, THEME, FILE_SORT, ALBUM_SORT, ALBUM_COLUMNS }
+
+internal val ScanProgress.fraction: Float?
+    get() = if (total > 0) completed.toFloat() / total else null
+
 data class MainUiState(
     val treeUri: String? = null,
     val root: MusicDocument? = null,
@@ -24,8 +30,7 @@ data class MainUiState(
     val selected: Set<String> = emptySet(),
     val editor: TagEditorState = TagEditorState(),
     val audioFilters: AudioFilters = AudioFilters(),
-    val durationDialog: Boolean = false,
-    val pathDialog: Boolean = false,
+    val dialog: MainDialog? = null,
     val renamePreset: RenamePreset = RenamePreset.TITLE_ARTIST,
     val renameCustomPattern: String = "@1-@2",
     val renameLoading: Boolean = false,
@@ -36,7 +41,6 @@ data class MainUiState(
     val recursive: Boolean = false,
     val candidates: List<SongCandidate> = emptyList(),
     val candidateNotice: String? = null,
-    val unresolved: List<UnresolvedMatch> = emptyList(),
     val candidateError: String? = null,
     val loading: Boolean = true,
     val showingCachedContent: Boolean = false,
@@ -48,8 +52,6 @@ data class MainUiState(
     val storageError: String? = null,
     val recoveryError: String? = null,
     val message: String? = null,
-    val themeDialog: Boolean = false,
-    val sortDialog: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val fileSort: FileSort = FileSort.NAME,
@@ -74,8 +76,6 @@ data class MainUiState(
     val albumSort: AlbumSort = AlbumSort.TITLE,
     val displayedAlbumSort: AlbumSort = AlbumSort.TITLE,
     val albumMinColumns: Int = 3,
-    val albumSortDialog: Boolean = false,
-    val albumColumnsDialog: Boolean = false,
 ) {
     val showStoragePicker: Boolean get() = !loading && !storageGranted
     val canRefresh: Boolean get() = storageGranted && !loading && !busy
@@ -102,7 +102,9 @@ data class MainUiState(
         !busy && storageGranted && storageError == null && recoveryError == null
     val loadingMessage: String get() = scanProgress?.let { "正在筛选音频 ${it.completed} / ${it.total}" }
         ?: "正在读取音乐文件夹"
-    val processingMessage: String get() = fileProgress?.let { "正式处理文件(${it.completed}/${it.total})" }
+    val processingMessage: String get() = fileProgress?.let {
+        "正式处理文件：已完成 ${it.completed}/${it.total}（最多${minOf(it.total, LocalFileWork.parallelism)}个文件任务并行）"
+    }
         ?: "正在准备文件任务"
     val renameLoadingMessage: String get() = renameReadProgress?.let {
         if (it.completed == it.total) "正在检查文件名" else "正在读取标签(${it.completed}/${it.total})"
@@ -113,8 +115,6 @@ data class MainUiState(
     val canRename: Boolean get() = canEditSelection && !renameLoading && renameError == null && renameEntries.any { it.willRename }
     val canSaveTags: Boolean get() = canEditSelection && editor.canSave
 }
-
-data class UnresolvedMatch(val document: MusicDocument, val reason: String)
 
 sealed interface MainEffect {
     data class OpenDirectory(val uri: String) : MainEffect

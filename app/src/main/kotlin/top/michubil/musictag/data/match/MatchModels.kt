@@ -24,7 +24,7 @@ data class CandidateSearch(
     val outcome: MatchOutcome,
 )
 
-enum class ScrapeKind { COMPLETE, PARTIAL, UNCHANGED, REVIEW, FAILED }
+enum class ScrapeKind { COMPLETE, PARTIAL, UNCHANGED, FAILED }
 
 data class ScrapeDisposition(val kind: ScrapeKind, val reason: String? = null)
 
@@ -32,6 +32,7 @@ data class PreparedScrape(
     val metadata: ScrapedMetadata = ScrapedMetadata(),
     val stop: ScrapeDisposition? = null,
     val kept: Map<MetadataField, String> = emptyMap(),
+    val unsupported: Set<MetadataField> = emptySet(),
 )
 
 data class MatchSession(

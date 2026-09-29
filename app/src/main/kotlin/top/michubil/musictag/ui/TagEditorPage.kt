@@ -8,7 +8,7 @@ import top.michubil.musictag.data.model.MetadataField
 @Composable
 fun TagEditorPage(state: TagEditorState, busy: Boolean, model: MainViewModel) {
     val draft = state.draft
-    val enabled = !busy && !state.loading && !state.coverLoading
+    val enabled = !busy && state.canChange
     AppContentList {
         item(key = "cover") {
             val replacing = MetadataField.COVER in draft.changed
@@ -78,7 +78,7 @@ fun TagEditorPage(state: TagEditorState, busy: Boolean, model: MainViewModel) {
 fun TagEditorActions(state: TagEditorState, canEditSelection: Boolean, model: MainViewModel) {
     AppActionBar(
         primaryLabel = "保存 ${state.count} 个文件", secondaryLabel = "重新读取",
-        enabled = canEditSelection && state.canSave, secondaryEnabled = canEditSelection && !state.loading && !state.coverLoading,
+        enabled = canEditSelection && state.canSave, secondaryEnabled = canEditSelection && state.canChange,
         onPrimary = { model.saveTags() }, onSecondary = { model.reloadTags() },
     )
 }

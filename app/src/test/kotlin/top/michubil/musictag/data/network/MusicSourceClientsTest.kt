@@ -1,7 +1,9 @@
 package top.michubil.musictag.data.network
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -12,10 +14,77 @@ import top.michubil.musictag.data.model.*
 import java.io.IOException
 import java.net.URI
 import java.util.Base64
+import java.util.Collections
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], manifest = Config.NONE)
 class MusicSourceClientsTest {
+    @Test
+    fun batchReusesEnrichedSongAlbumAndCoverButNextBatchFetchesAgain() = runBlocking {
+        for (source in MusicSource.entries) {
+            val transport = FixtureTransport(source)
+            val root = client(source, transport)
+            val batch = root.forBatch(this)
+            val selected = setOf(MetadataField.TITLE, MetadataField.DATE, MetadataField.COVER)
+            batch.enrich(candidate(source))
+            repeat(2) {
+                val result = batch.metadata(candidate(source), selected)
+                assertEquals(RemoteValue.Available("Song"), result.title)
+                assertTrue(result.date is RemoteValue.Available)
+                assertEquals(RemoteValue.Available(transport.image), result.cover)
+            }
+            assertEquals(2, transport.jsonRequests.size)
+            assertEquals(1, transport.coverRequests)
+            root.forBatch(this).metadata(candidate(source), selected)
+            assertEquals(4, transport.jsonRequests.size)
+            assertEquals(2, transport.coverRequests)
+        }
+    }
+
+    @Test
+    fun cachedSearchDoesNotReuseAnotherFilesMatchingDecision() = runBlocking {
+        val transport = FixtureTransport(MusicSource.QQ)
+        val batch = MetadataSourcesClient(QqMusicClient(transport)).forBatch(this)
+        val options = ScrapeOptions(sources = ScrapeSources(sourceSelections(MusicSource.QQ)))
+        val local = LocalTrack("Song.mp3", "Song", listOf("Artist"), "Album", 180_000)
+        val matched = batch.candidates(local, options)
+        val differentAudio = batch.candidates(local.copy(durationMs = 300_000), options)
+        assertTrue(matched.outcome is top.michubil.musictag.data.match.MatchOutcome.Accept)
+        assertTrue(differentAudio.outcome is top.michubil.musictag.data.match.MatchOutcome.Review)
+        // Combined query is cached; the second file still tries its own pure-title fallback.
+        assertEquals(2, transport.jsonRequests.size)
+    }
+
+    @Test
+    fun independentLyricsAndCoverRequestsCanBothStartBeforeEitherFinishes() = runBlocking {
+        for (source in MusicSource.entries) {
+            withTimeout(5_000) {
+                val fixture = FixtureTransport(source)
+                val lyricsStarted = CompletableDeferred<Unit>()
+                val coverStarted = CompletableDeferred<Unit>()
+                val transport = object : MusicTransport by fixture {
+                    override suspend fun json(url: String, referer: String, label: String, body: ByteArray?,
+                        contentType: String): JSONObject {
+                        lyricsStarted.complete(Unit)
+                        coverStarted.await()
+                        return fixture.json(url, referer, label, body, contentType)
+                    }
+
+                    override suspend fun cover(rawUrl: String, referer: String,
+                        trustedHost: (String) -> Boolean): CoverImage {
+                        coverStarted.complete(Unit)
+                        lyricsStarted.await()
+                        return fixture.cover(rawUrl, referer, trustedHost)
+                    }
+                }
+                val result = client(source, transport).forBatch(this)
+                    .metadata(candidate(source), setOf(MetadataField.LYRICS, MetadataField.COVER))
+                assertTrue(result.lyrics is RemoteValue.Available)
+                assertTrue(result.cover is RemoteValue.Available)
+            }
+        }
+    }
+
     @Test
     fun detailFailurePreservesLyricsAndKnownCover() = runBlocking {
         for (source in MusicSource.entries) {
@@ -202,7 +271,7 @@ class MusicSourceClientsTest {
         val lyricCode: Any = if (source == MusicSource.NETEASE) 200 else 0,
         val lyricText: String = "[00:01.000]Hello",
     ) : MusicTransport {
-        val jsonRequests = mutableListOf<String>()
+        val jsonRequests: MutableList<String> = Collections.synchronizedList(mutableListOf())
         var searchRequest: JSONObject? = null
         var coverRequests = 0
         val image = CoverImage(byteArrayOf(1), "image/jpeg", 1, 1)
@@ -222,11 +291,20 @@ class MusicSourceClientsTest {
                         .put("lyric", Base64.getEncoder().encodeToString(lyricText.toByteArray()))
                 }
             }
+            if ("/weapi/v1/album/" in url) {
+                return JSONObject().put("code", 200).put("album", JSONObject()
+                    .put("id", 2).put("publishTime", 1_700_000_000_000L))
+            }
             check(url.endsWith("/weapi/v3/song/detail") || url.endsWith("/cgi-bin/musicu.fcg")) {
                 "Unexpected request: $url"
             }
             if (source == MusicSource.QQ && body != null) {
                 val payload = JSONObject(body.toString(Charsets.UTF_8))
+                if (payload.has("music.musichallAlbum.AlbumInfoServer")) {
+                    return JSONObject().put("code", 0).put("music.musichallAlbum.AlbumInfoServer",
+                        JSONObject().put("code", 0).put("data", JSONObject().put("basicInfo",
+                            JSONObject().put("publishDate", "2023-11-14"))))
+                }
                 val request = payload.optJSONObject("music.search.SearchCgiService.DoSearchForQQMusicDesktop")
                 if (request != null) {
                     check(request.string("module") == "music.search.SearchCgiService")

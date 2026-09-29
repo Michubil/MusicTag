@@ -9,9 +9,7 @@ internal class AudioFileFilter(
     private suspend fun duration(document: MusicDocument, known: Long?): Long? {
         currentCoroutineContext().ensureActive()
         if (known != null) return known
-        val value = try { probe(document)?.takeIf { it > 0 } }
-            catch (error: CancellationException) { throw error }
-            catch (_: Exception) { null }
+        val value = operationResult { probe(document)?.takeIf { it > 0 } }.getOrNull()
         currentCoroutineContext().ensureActive()
         return value
     }

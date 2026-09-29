@@ -34,9 +34,11 @@ data class FieldPolicy(
     val overwrite: Boolean = true,
 )
 
-internal fun FieldPolicy.shouldWrite(incoming: RemoteValue<*>, hasExisting: Boolean): Boolean = enabled && when (incoming) {
-    is RemoteValue.Available -> overwrite || !hasExisting
-    RemoteValue.ConfirmedAbsent -> overwrite
+internal fun FieldPolicy.shouldFetch(hasExisting: Boolean): Boolean = enabled && (overwrite || !hasExisting)
+
+internal fun FieldPolicy.shouldWrite(incoming: RemoteValue<*>, hasExisting: Boolean): Boolean = when (incoming) {
+    is RemoteValue.Available -> shouldFetch(hasExisting)
+    RemoteValue.ConfirmedAbsent -> enabled && overwrite
     RemoteValue.Unavailable -> false
 }
 

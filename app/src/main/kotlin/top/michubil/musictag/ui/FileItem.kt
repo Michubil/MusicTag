@@ -1,5 +1,9 @@
 package top.michubil.musictag.ui
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -17,6 +21,16 @@ class FileItem(val document: MusicDocument, track: LocalTrack? = null) {
     }
     internal fun releaseArtwork() { mutablePreview.update { if (it.artwork == null) it else it.copy(artwork = null) } }
     internal fun frozenCopy(): FileItem = FileItem(document).also { it.showPreview(preview.value.copy()) }
+}
+
+@Composable
+internal fun FileItem.observePreview(model: MainViewModel, revision: Int = 0, load: Boolean = true): FilePreview {
+    val value by preview.collectAsStateWithLifecycle()
+    DisposableEffect(this, revision, load) {
+        if (load) model.loadFilePreview(this@observePreview)
+        onDispose { if (load) model.releaseArtwork(this@observePreview) }
+    }
+    return value
 }
 
 /** Bitmaps are display-only; snapshot the values and flow owners, without duplicating pixel buffers. */

@@ -1,8 +1,12 @@
 package top.michubil.musictag.data.network
 
+import top.michubil.musictag.data.operationResult
+
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import top.michubil.musictag.data.lyrics.LyricsCodec
 import top.michubil.musictag.data.model.CoverImage
@@ -18,12 +22,17 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.ZoneId
 
-class NetEaseClient internal constructor(private val transport: MusicTransport) : MusicSourceClient {
+class NetEaseClient internal constructor(
+    private val transport: MusicTransport,
+    private val requests: SourceRequests? = null,
+) : MusicSourceClient {
     constructor() : this(MusicHttp)
 
     override val source = MusicSource.NETEASE
 
-    override suspend fun search(query: String, page: Int): SearchPage {
+    override fun forBatch(scope: CoroutineScope): MusicSourceClient = NetEaseClient(transport, SourceRequests(scope))
+
+    override suspend fun search(query: String, page: Int): SearchPage = requests?.searches.load(query to page) {
         val offset = page * PAGE_SIZE
         val payload = JSONObject()
             .put("s", query)
@@ -36,36 +45,40 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
         val songs = result.optJSONArray("songs")
         if (songs == null) {
             check(result.long("songCount") == 0L) { "网易云没有返回搜索结果" }
-            return SearchPage(emptyList())
+            return@load SearchPage(emptyList())
         }
-        val parsed = parseCandidates(songs)
+        val candidates = songs.songCandidates(source, ::candidateFromSong)
         val total = result.long("songCount")
         val nextPage = total?.takeIf { it > offset + songs.length() }?.let { page + 1 }
-        return parsed.copy(nextPage = nextPage)
+        SearchPage(candidates, nextPage)
     }
 
     override suspend fun enrich(candidate: SongCandidate): SongCandidate {
         require(candidate.source == source && candidate.id > 0)
-        val payload = JSONObject().put("c", "[{\"id\":${candidate.id}}]").put("ids", "[${candidate.id}]")
+        return requireNotNull(candidateFromSong(fetchSongDetail(candidate.id)))
+    }
+
+    private suspend fun fetchSongDetail(id: Long): JSONObject = requests?.songs.load(id) {
+        val payload = JSONObject().put("c", "[{\"id\":$id}]").put("ids", "[$id]")
         val song = post("/weapi/v3/song/detail", payload).optJSONArray("songs").objects().firstOrNull()
             ?: error("网易云没有返回歌曲详情")
         val detailed = candidateFromSong(song) ?: error("网易云歌曲详情结构无效")
-        check(detailed.id == candidate.id) { "网易云返回了不一致的歌曲详情" }
-        return detailed
+        check(detailed.id == id) { "网易云返回了不一致的歌曲详情" }
+        song
     }
 
-    override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
+    override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata = coroutineScope {
         require(candidate.source == source && candidate.id > 0)
-        if (fields.isEmpty()) return ScrapedMetadata()
+        if (fields.isEmpty()) return@coroutineScope ScrapedMetadata()
         val songId = candidate.id
+        val lyrics = async {
+            if (MetadataField.LYRICS in fields) downloadLyrics(songId) else RemoteValue.Unavailable
+        }
         val needsDetail = fields.any { it in MetadataField.tagFields } ||
             (MetadataField.COVER in fields && candidate.coverUrl == null)
-        val detail = if (needsDetail) sourceResult {
-            val payload = JSONObject().put("c", "[{\"id\":$songId}]").put("ids", "[$songId]")
-            val song = post("/weapi/v3/song/detail", payload).optJSONArray("songs").objects()
-                .firstOrNull() ?: error("网易云没有返回歌曲详情")
-            val base = candidateFromSong(song) ?: error("网易云歌曲详情结构无效")
-            check(base.id == songId) { "网易云返回了不一致的歌曲详情" }
+        val detail = if (needsDetail) operationResult {
+            val song = fetchSongDetail(songId)
+            val base = requireNotNull(candidateFromSong(song))
             song to base
         }.getOrNull() else null
         val song = detail?.first
@@ -74,7 +87,11 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
             fields.any { it in setOf(MetadataField.DATE, MetadataField.TRACK, MetadataField.DISC) } ||
                 (MetadataField.COVER in fields && (base?.coverUrl ?: candidate.coverUrl) == null)
         }?.let { albumId ->
-            sourceResult { post("/weapi/v1/album/$albumId", JSONObject().put("id", albumId)) }.getOrNull()
+            operationResult { requests?.albums.load(albumId) {
+                post("/weapi/v1/album/$albumId", JSONObject().put("id", albumId)).also {
+                    check(it.optJSONObject("album")?.long("id") == albumId) { "网易云返回了不一致的专辑详情" }
+                }
+            } }.getOrNull()
         }
         val albumInfo = album?.optJSONObject("album")
         val albumSongs = album?.optJSONArray("songs").objects()
@@ -84,31 +101,32 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
         val discNumber = parseDisc(song?.string("cd"))
         val discTotal = albumSongs.mapNotNull { parseDisc(it.string("cd")) }.maxOrNull()
 
-        val lyrics = if (MetadataField.LYRICS in fields) downloadLyrics(songId) else RemoteValue.Unavailable
         val coverUrl = albumInfo?.string("picUrl") ?: base?.coverUrl ?: candidate.coverUrl
         val publishTime = albumInfo?.long("publishTime")?.takeIf { it > 0 } ?: base?.publishTimeMs
 
-        return ScrapedMetadata(
+        val cover = coverUrl?.takeIf { MetadataField.COVER in fields }?.let { url ->
+            operationResult { requests?.covers.load(url) { downloadCover(url) } }.getOrNull()
+                ?.let { RemoteValue.Available(it) }
+        } ?: RemoteValue.Unavailable
+        ScrapedMetadata(
             title = base?.title?.let { RemoteValue.Available(it) } ?: RemoteValue.Unavailable,
             artists = base?.artists?.takeIf(List<String>::isNotEmpty)?.let { RemoteValue.Available(it) }
                 ?: RemoteValue.Unavailable,
             album = base?.album?.takeIf(String::isNotBlank)?.let { RemoteValue.Available(it) }
                 ?: RemoteValue.Unavailable,
-            date = publishTime?.let { sourceResult { releaseDate(it) }.getOrNull() }
+            date = publishTime?.let { operationResult { releaseDate(it) }.getOrNull() }
                 ?.let { RemoteValue.Available(it) } ?: RemoteValue.Unavailable,
             track = trackNumber?.takeIf { it > 0 }
                 ?.let { RemoteValue.Available(TrackIndex(it, trackTotal)) } ?: RemoteValue.Unavailable,
             disc = discNumber?.takeIf { it > 0 }
                 ?.let { RemoteValue.Available(TrackIndex(it, discTotal)) } ?: RemoteValue.Unavailable,
-            lyrics = lyrics,
-            cover = coverUrl?.takeIf { MetadataField.COVER in fields }?.let { url ->
-                sourceResult { downloadCover(url) }.getOrNull()?.let { RemoteValue.Available(it) }
-            } ?: RemoteValue.Unavailable,
+            lyrics = lyrics.await(),
+            cover = cover,
         )
     }
 
     private suspend fun downloadLyrics(songId: Long): RemoteValue<String> {
-        val lyric = sourceResult {
+        val lyric = operationResult {
             post("/weapi/song/lyric", JSONObject().put("id", songId).put("lv", -1).put("tv", -1))
         }.getOrNull() ?: return RemoteValue.Unavailable
         if (lyric.boolean("pureMusic") == true) return RemoteValue.ConfirmedAbsent
@@ -132,18 +150,6 @@ class NetEaseClient internal constructor(private val transport: MusicTransport) 
 
     private suspend fun downloadCover(rawUrl: String): CoverImage = transport.cover(rawUrl, REFERER) {
         it == "music.126.net" || it.endsWith(".music.126.net")
-    }
-
-    private fun parseCandidates(songs: JSONArray): SearchPage {
-        val candidates = mutableListOf<SongCandidate>()
-        for (index in 0 until songs.length()) {
-            val song = songs.optJSONObject(index)
-            if (song == null) continue
-            val candidate = candidateFromSong(song)
-            if (candidate != null) candidates += candidate
-        }
-        if (songs.length() > 0 && candidates.isEmpty()) error("网易云搜索结果无法解析")
-        return SearchPage(candidates.distinctBy(SongCandidate::key))
     }
 
     private fun candidateFromSong(song: JSONObject): SongCandidate? {

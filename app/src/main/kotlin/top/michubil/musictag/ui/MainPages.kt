@@ -2,14 +2,12 @@ package top.michubil.musictag.ui
 
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.androidgui.core.designsystem.component.*
 import dev.androidgui.core.designsystem.icon.AppIcons
@@ -33,8 +31,7 @@ fun BrowserPage(state: MainUiState, model: MainViewModel, loadPreviews: Boolean 
             {
                 AppLoadingStatus(
                     message = if (state.busy) state.processingMessage else state.loadingMessage,
-                    progress = (if (state.busy) state.fileProgress else state.scanProgress)
-                        ?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
+                    progress = (if (state.busy) state.fileProgress else state.scanProgress)?.fraction,
                     deferDisplay = !state.busy,
                 )
             }
@@ -95,19 +92,20 @@ fun SearchPage(state: MainUiState, model: MainViewModel) {
         enabled = state.canRefreshSearch,
         onRefresh = { model.pullRefresh() },
         compact = true,
-        status = if (state.libraryLoading) {
+        status = if (state.busy || state.libraryLoading) {
             {
                 AppLoadingStatus(
-                    message = state.libraryLoadingMessage,
-                    progress = state.libraryProgress?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
-                    deferDisplay = !state.libraryRefreshing,
+                    message = if (state.busy) state.processingMessage else state.libraryLoadingMessage,
+                    progress = (if (state.busy) state.fileProgress else state.libraryProgress)?.fraction,
+                    deferDisplay = !state.busy && !state.libraryRefreshing,
                 )
             }
         } else null,
     ) {
         when {
             state.searchQuery.isBlank() -> item { EmptyState(title = "搜索歌曲名、艺术家或专辑") }
-            state.searchItems.isEmpty() && !state.libraryLoading && !state.libraryRefreshing -> item { EmptyState(title = "没有找到匹配的歌曲") }
+            state.searchItems.isEmpty() && !state.busy && !state.libraryLoading && !state.libraryRefreshing ->
+                item { EmptyState(title = "没有找到匹配的歌曲") }
             else -> items(state.searchItems, key = { it.document.uri }) { item ->
                 AudioFileRow(item, state, model, loadPreviews = true)
             }
@@ -127,11 +125,7 @@ internal fun SelectMusicFolderEmpty(state: MainUiState, model: MainViewModel) {
 
 @Composable
 internal fun AudioFileRow(item: FileItem, state: MainUiState, model: MainViewModel, loadPreviews: Boolean) {
-    val preview by item.preview.collectAsStateWithLifecycle()
-    DisposableEffect(item, state.artworkRevision, loadPreviews) {
-        if (loadPreviews) model.loadFilePreview(item)
-        onDispose { if (loadPreviews) model.releaseArtwork(item) }
-    }
+    val preview = item.observePreview(model, state.artworkRevision, loadPreviews)
     AppThreeLineContentRow(
         title = item.document.name,
         supporting = preview.track?.artists.orEmpty().joinToString(" / "),
@@ -161,19 +155,7 @@ fun OptionsActions(state: MainUiState, model: MainViewModel) {
 fun OptionsPage(state: MainUiState, model: MainViewModel) {
     val enabledPolicies = state.policies.values.filter { it.enabled }
     AppContentList {
-        if (state.busy) item { AppProgress() }
-        if (state.unresolved.isNotEmpty()) {
-            item { AppSupportingText("本次还有 ${state.unresolved.size} 个文件待处理") }
-            items(state.unresolved, key = { it.document.uri }) { match ->
-                AppContentRow(
-                    title = match.document.name,
-                    summary = match.reason,
-                    icon = AppIcons.Error,
-                    onClick = { model.openUnresolved(match) },
-                    enabled = !state.busy,
-                )
-            }
-        }
+        if (state.busy) item { AppProgress(message = state.processingMessage) }
         item {
             PreferenceGroup {
                 item {
@@ -392,65 +374,67 @@ fun AboutPage(state: MainUiState, model: MainViewModel) {
 }
 
 @Composable
-fun MainDialogs(state: MainUiState, settingsVisible: Boolean, browserVisible: Boolean, aboutVisible: Boolean, albumsVisible: Boolean, model: MainViewModel) {
-    var pathDraft by remember(state.pathDialog) {
-        mutableStateOf(if (state.pathDialog) state.audioFilters.excludedPaths.joinToString("\n") else "")
+fun MainDialogs(state: MainUiState, visibleDialog: MainDialog?, showUpdate: Boolean, model: MainViewModel) {
+    val pathVisible = visibleDialog == MainDialog.PATH
+    val sortVisible = visibleDialog == MainDialog.FILE_SORT
+    var pathDraft by remember(pathVisible) {
+        mutableStateOf(if (pathVisible) state.audioFilters.excludedPaths.joinToString("\n") else "")
     }
     val pathError = runCatching { AudioFilters.parsePaths(pathDraft) }.exceptionOrNull()?.userMessage()
-    var sortDraft by remember(state.sortDialog) { mutableStateOf(state.fileSort) }
-    var sortDescendingDraft by remember(state.sortDialog) { mutableStateOf(state.sortDescending) }
+    var sortDraft by remember(sortVisible) { mutableStateOf(state.fileSort) }
+    var sortDescendingDraft by remember(sortVisible) { mutableStateOf(state.sortDescending) }
     AppSingleChoiceDialog(
-        visible = state.durationDialog && settingsVisible, title = "隐藏短于所选时长的音频",
+        visible = visibleDialog == MainDialog.DURATION, title = "隐藏短于所选时长的音频",
         options = AudioFilters.minimumSecondsOptions.map { AppChoiceOption(it, if (it == 0) "未设置" else "$it 秒") },
         selectedValue = state.audioFilters.minimumSeconds, enabled = !state.busy,
         onSelect = { model.setDurationFilter(it) },
-        onDismissRequest = { model.dismissDurationFilter() },
+        onDismissRequest = model::dismissDialog,
     )
     AppTextInputDialog(
-        visible = state.pathDialog && settingsVisible, title = "排除文件夹路径", value = pathDraft,
+        visible = visibleDialog == MainDialog.PATH, title = "排除文件夹路径", value = pathDraft,
         label = "相对路径，一行一个", description = "相对于所选音乐文件夹，例如 播客/缓存。排除目录及其子目录；留空取消过滤。过滤同时作用于文件列表和所有批量操作。",
         error = pathError, enabled = !state.busy,
         onValueChange = { pathDraft = it },
         onConfirm = { if (pathError == null) model.applyPathFilter(pathDraft) },
-        onDismissRequest = { model.dismissPathFilter() },
+        onDismissRequest = model::dismissDialog,
     )
     AppSingleChoiceDialog(
-        visible = state.themeDialog && settingsVisible,
+        visible = visibleDialog == MainDialog.THEME,
         title = "主题",
         options = ThemeMode.entries.map { AppChoiceOption(it, it.label) },
         selectedValue = state.themeMode,
         onSelect = { model.setTheme(it) },
-        onDismissRequest = { model.dismissThemeDialog() },
+        onDismissRequest = model::dismissDialog,
     )
     AppSingleChoiceDialog(
-        visible = state.sortDialog && browserVisible,
+        visible = visibleDialog == MainDialog.FILE_SORT,
         title = "排序",
         options = FileSort.entries.map { AppChoiceOption(it, it.label) },
         selectedValue = sortDraft,
         enabled = state.canSort,
         onSelect = { sortDraft = it },
-        onDismissRequest = { model.dismissSortDialog() },
+        onDismissRequest = model::dismissDialog,
         toggle = AppDialogToggle("倒序", sortDescendingDraft) { sortDescendingDraft = it },
         actions = AppDialogActions("确定", "取消") { model.applySort(sortDraft, sortDescendingDraft) },
     )
     AppSingleChoiceDialog(
-        visible = state.albumSortDialog && albumsVisible,
+        visible = visibleDialog == MainDialog.ALBUM_SORT,
         title = "排序",
         options = AlbumSort.entries.map { AppChoiceOption(it, it.label) },
         selectedValue = state.albumSort,
         onSelect = { model.setAlbumSort(it) },
-        onDismissRequest = { model.dismissAlbumSortDialog() },
+        onDismissRequest = model::dismissDialog,
     )
     AppSingleChoiceDialog(
-        visible = state.albumColumnsDialog && albumsVisible,
+        visible = visibleDialog == MainDialog.ALBUM_COLUMNS,
         title = "最小列数",
         options = listOf(2, 3, 4).map { AppChoiceOption(it, it.toString()) },
         selectedValue = state.albumMinColumns,
         onSelect = { model.setAlbumMinColumns(it) },
-        onDismissRequest = { model.dismissAlbumColumnsDialog() },
+        onDismissRequest = model::dismissDialog,
     )
     AppConfirmDialog(
-        visible = state.availableUpdate != null && aboutVisible,
+        visible = showUpdate,
         title = "发现新版本",
         message = state.availableUpdate?.let { "${it.versionName} 可下载，是否更新？" }.orEmpty(),
         actions = AppDialogActions("下载", "取消") { model.confirmUpdateDownload() },

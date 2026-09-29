@@ -3,15 +3,12 @@ package top.michubil.musictag.ui
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.androidgui.core.designsystem.component.AppAlbumCard
 import dev.androidgui.core.designsystem.component.AppAlbumGrid
@@ -68,7 +65,7 @@ fun AlbumsPage(state: MainUiState, model: MainViewModel) {
                 {
                     AppLoadingStatus(
                         message = state.libraryLoadingMessage,
-                        progress = state.libraryProgress?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
+                        progress = state.libraryProgress?.fraction,
                         deferDisplay = true,
                     )
                 }
@@ -89,7 +86,7 @@ fun AlbumsPage(state: MainUiState, model: MainViewModel) {
                 minColumns = state.albumMinColumns,
                 onAlbumClick = { model.openAlbum(it) },
                 state = gridState,
-                artwork = { card -> albumCover(state.albumCovers[card.id], model) },
+                artwork = { card -> state.albumCovers[card.id]?.observePreview(model)?.artwork?.asImageBitmap() },
             )
         }
     }
@@ -105,17 +102,6 @@ private fun albumCards(albums: List<AlbumGroup>): List<AppAlbumCard> = albums.ma
 }
 
 @Composable
-private fun albumCover(cover: FileItem?, model: MainViewModel): ImageBitmap? {
-    if (cover == null) return null
-    val preview by cover.preview.collectAsStateWithLifecycle()
-    DisposableEffect(cover) {
-        model.loadFilePreview(cover)
-        onDispose { model.releaseArtwork(cover) }
-    }
-    return preview.artwork?.asImageBitmap()
-}
-
-@Composable
 fun AlbumTracksPage(state: MainUiState, model: MainViewModel) {
     AppRefreshableContentList(
         refreshing = state.libraryRefreshing,
@@ -126,7 +112,7 @@ fun AlbumTracksPage(state: MainUiState, model: MainViewModel) {
             {
                 AppLoadingStatus(
                     message = state.libraryLoadingMessage,
-                    progress = state.libraryProgress?.takeIf { it.total > 0 }?.let { it.completed.toFloat() / it.total },
+                    progress = state.libraryProgress?.fraction,
                     deferDisplay = true,
                 )
             }
