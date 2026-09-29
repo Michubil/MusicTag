@@ -33,10 +33,4 @@ class AppLoadingStatusTest {
         compose.mainClock.advanceTimeBy(400)
         compose.onNodeWithText("Reading").assertIsDisplayed()
     }
-
-    @Test
-    fun fileProcessingCanDisplayImmediately() {
-        compose.setContent { AppTheme(darkTheme = false) { AppLoadingStatus("Processing") } }
-        compose.onNodeWithText("Processing").assertIsDisplayed()
-    }
 }

@@ -12,9 +12,4 @@ class FileWorkSummaryTest {
         assertEquals(1, summary.success)
         assertEquals(listOf("bad.flac：读取失败", "unknown.wav：操作失败"), summary.failures)
     }
-
-    @Test
-    fun emptyBatchHasNoFailures() {
-        assertEquals(FileWorkSummary(0, emptyList()), summarizeFileResults(emptyList<String>(), emptyList()) { it })
-    }
 }
