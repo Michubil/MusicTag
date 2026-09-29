@@ -29,13 +29,13 @@ internal class AcoustIdClient(
         ).entries.joinToString("&") { (key, value) ->
             "$key=${URLEncoder.encode(value, Charsets.UTF_8)}"
         }.toByteArray(Charsets.UTF_8)
-        val response = rateGate.withLock {
+        rateGate.withLock {
             val wait = 350.milliseconds - lastRequest.elapsedNow()
             if (wait.isPositive()) delay(wait.inWholeMilliseconds)
             lastRequest = TimeSource.Monotonic.markNow()
-            transport.json("https://api.acoustid.org/v2/lookup", "https://acoustid.org/",
-                "AcoustID 指纹查询", body, "application/x-www-form-urlencoded")
         }
+        val response = transport.json("https://api.acoustid.org/v2/lookup", "https://acoustid.org/",
+            "AcoustID 指纹查询", body, "application/x-www-form-urlencoded")
         check(response.string("status") == "ok") {
             response.optJSONObject("error")?.string("message") ?: "AcoustID 查询失败"
         }

@@ -14,7 +14,7 @@ class RecordingMatchTest {
     private fun candidate(id: Long, title: String) = SongCandidate(id, title, listOf("Artist"), "Album",
         null, 100_000L, null, null, null)
     private fun found(candidates: List<SongCandidate>) = candidates.mapIndexed { index, candidate ->
-        FoundCandidate(candidate, sourceIndex = if (candidate.source == MusicSource.QQ) 1 else 0, platformRank = index)
+        FoundCandidate(candidate, platformRank = index)
     }
     private fun accept(track: LocalTrack, candidates: List<SongCandidate>) =
         (RecordingMatch.decide(track, found(candidates), null).outcome as? MatchOutcome.Accept)?.candidate
@@ -32,8 +32,8 @@ class RecordingMatchTest {
         val remote = candidate(1, "Song")
         val missing = RecordingMatch.decide(local("Song").copy(durationMs = null), found(listOf(remote)), null)
         assertEquals(remote, (missing.outcome as MatchOutcome.Accept).candidate)
-        assertTrue(missing.ranked.single().explanations.contains("时长未知"))
-        assertTrue(missing.ranked.single().explanations.contains("标题一致"))
+        assertEquals(remote, missing.ranked.single())
+        assertEquals(DurationRelation.UNKNOWN, bestEvidence(local("Song").copy(durationMs = null), remote, null)?.duration)
     }
 
     @Test
@@ -41,9 +41,8 @@ class RecordingMatchTest {
         val untitled = LocalTrack("Ａ—Song.MP3", null, listOf("Artist"), "Album", 100_000L)
         val song = candidate(1, "a song")
         assertEquals(song, accept(untitled, listOf(song)))
-        assertEquals("Ａ—Song", QueryPlan.display(untitled, null).first)
+        assertTrue("Ａ—Song" in QueryPlan.plannedQueries(untitled, null))
         assertEquals(comparableText("Ａ—Song"), comparableText("a song"))
-        assertEquals(comparableText("Song.Live"), comparableText("Song.Live"))
         assertTrue(versionMarks("Song.Live") != versionMarks("Song.Demo"))
         assertTrue(versionMarks("Song.Live") != versionMarks("Song"))
     }
@@ -74,14 +73,14 @@ class RecordingMatchTest {
     }
 
     @Test
-    fun japaneseCreditMismatchIsShownAndNotAutoAccepted() {
+    fun japaneseCreditMismatchNeedsReviewAndAConfirmedSplitCanBeAccepted() {
         val track = LocalTrack("other.flac", "月華の円舞曲 -Valse di Fantastica-",
             listOf("宮野幸子/森下唯"), null, null)
         val remote = candidate(1, "月華の円舞曲").copy(artists = listOf("下村陽子"))
         val decision = RecordingMatch.decide(track, found(listOf(remote)), null)
         assertTrue(decision.outcome is MatchOutcome.Review)
         assertEquals("署名不同", (decision.outcome as MatchOutcome.Review).summary)
-        assertEquals(remote, decision.ranked.single().candidate)
+        assertEquals(remote, decision.ranked.single())
         val confirmed = remote.copy(artists = listOf("宮野幸子", "森下唯"))
         assertEquals(confirmed, accept(track, listOf(confirmed)))
         assertNull(splitArtistValue("AC/DC"))
@@ -104,7 +103,7 @@ class RecordingMatchTest {
         val first = candidate(1, "Song A")
         val second = candidate(2, "Song B")
         val ranked = RecordingMatch.decide(track, found(listOf(second, first)), null).ranked
-        assertEquals(first, ranked.first().candidate)
+        assertEquals(first, ranked.first())
         assertEquals(first, accept(track, listOf(second, first)))
         assertEquals(first, accept(track, listOf(first, candidate(3, "Song-A"))))
         assertTrue(RecordingMatch.decide(local("kitten"), found(listOf(candidate(4, "sitting"))), null).outcome is MatchOutcome.Review)
@@ -115,13 +114,27 @@ class RecordingMatchTest {
     }
 
     @Test
+    fun strongerEvidenceWinsAcrossSourcesWhileEqualCompetingEvidenceNeedsReview() {
+        val track = local("Song")
+        val weaker = candidate(1, "Song").copy(album = "Other Album", durationMs = null)
+        val stronger = candidate(2, "Song").copy(source = MusicSource.QQ)
+        val decision = RecordingMatch.decide(track, found(listOf(weaker, stronger)), null)
+        assertEquals(stronger, decision.ranked.first())
+        assertEquals(stronger, (decision.outcome as MatchOutcome.Accept).candidate)
+
+        val equal = weaker.copy(album = "Album")
+        assertTrue(RecordingMatch.decide(track.copy(durationMs = null), found(listOf(equal, stronger)), null)
+            .outcome is MatchOutcome.Review)
+    }
+
+    @Test
     fun filenameOrderIsConfirmedByTheCandidateRatherThanAssumed() {
         val song = candidate(1, "晴天").copy(artists = listOf("周杰伦"))
         for (name in listOf("周杰伦 - 晴天.flac", "晴天 - 周杰伦.MP3", "01. 周杰伦 - 晴天.wav", "01 - 晴天 — 周杰伦.flac")) {
             val track = LocalTrack(name, null, emptyList(), null, 100_000L)
             assertEquals(song, accept(track, listOf(song)), name)
             val ranked = RecordingMatch.decide(track, found(listOf(candidate(2, "Other"), song)), null).ranked
-            assertEquals(song, ranked.first().candidate)
+            assertEquals(song, ranked.first())
         }
     }
 
@@ -132,7 +145,7 @@ class RecordingMatchTest {
         val wrongSinger = candidate(1, title).copy(artists = listOf("B"))
         val decision = RecordingMatch.decide(track, found(listOf(wrongSinger)), null)
         assertTrue(decision.outcome is MatchOutcome.Review)
-        assertEquals(wrongSinger, decision.ranked.single().candidate)
+        assertEquals(wrongSinger, decision.ranked.single())
     }
 
     @Test
@@ -146,10 +159,10 @@ class RecordingMatchTest {
     @Test
     fun contradictoryTagAndFilenameNeedReview() {
         val tagged = local("01. Song.Live").copy(fileName = "Other - Wrong.mp3")
-        assertEquals("01. Song.Live", QueryPlan.display(tagged, null).first)
+        assertTrue("01. Song.Live" in QueryPlan.plannedQueries(tagged, null))
         assertTrue(RecordingMatch.decide(tagged, found(listOf(candidate(1, "01. Song.Live"))), null).outcome is MatchOutcome.Review)
         val untitled = local("Song").copy(title = null, fileName = "Artist - Song.mp3")
-        assertEquals("Artist - Song", QueryPlan.display(untitled, null).first)
+        assertTrue("Artist - Song" in QueryPlan.plannedQueries(untitled, null))
         assertEquals(candidate(1, "Song"), accept(untitled, listOf(candidate(1, "Song"))))
         assertNull(accept(untitled.copy(artists = listOf("Another Artist")), listOf(candidate(1, "Song"))))
     }
@@ -159,8 +172,8 @@ class RecordingMatchTest {
         val track = LocalTrack("AC-DC.mp3", null, emptyList(), null, 100_000L)
         val remote = candidate(1, "DC").copy(artists = listOf("AC"))
         assertNull(accept(track, listOf(remote)))
-        assertEquals("99 Luftballons", QueryPlan.display(track.copy(fileName = "99 Luftballons.flac", title = null), null).first)
-        assertEquals("A - B - C", QueryPlan.display(track.copy(fileName = "A - B - C.wav", title = null), null).first)
+        assertTrue("99 Luftballons" in QueryPlan.plannedQueries(track.copy(fileName = "99 Luftballons.flac", title = null), null))
+        assertTrue("A - B - C" in QueryPlan.plannedQueries(track.copy(fileName = "A - B - C.wav", title = null), null))
     }
 
     @Test
@@ -225,7 +238,7 @@ class RecordingMatchTest {
         val decision = RecordingMatch.decide(LocalTrack(".mp3", " ", emptyList(), " ", 0), found(listOf(remote)), null)
         assertTrue(decision.outcome !is MatchOutcome.Accept)
         assertFalse(sameRecording(remote, remote))
-        assertTrue(RecordingMatch.decide(local("Song").copy(durationMs = 0), found(listOf(candidate(2, "Song"))), null)
-            .ranked.single().explanations.contains("时长未知"))
+        assertEquals(DurationRelation.UNKNOWN,
+            bestEvidence(local("Song").copy(durationMs = 0), candidate(2, "Song"), null)?.duration)
     }
 }

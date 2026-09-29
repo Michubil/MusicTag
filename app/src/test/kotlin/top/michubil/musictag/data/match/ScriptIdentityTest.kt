@@ -26,7 +26,7 @@ class ScriptIdentityTest {
         assertEquals(TitleRelation.VARIANT, titleRelation(local.title!!, remote.title))
         assertEquals(ArtistRelation.MATCH, artistRelation(local.artists, remote.artists, true))
         assertEquals(AlbumRelation.SAME, albumRelation(local.album, remote.album))
-        val decision = RecordingMatch.decide(local, listOf(FoundCandidate(remote, 0, 0)), null)
+        val decision = RecordingMatch.decide(local, listOf(FoundCandidate(remote, 0)), null)
         assertEquals(remote, (decision.outcome as MatchOutcome.Accept).candidate)
     }
 }

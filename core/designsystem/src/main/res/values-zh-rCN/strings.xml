@@ -3,6 +3,5 @@
     <!-- Music Tag adaptation: accessible toolbar menu label. -->
     <string name="app_menu">菜单</string>
     <string name="app_collapse_menu">收起菜单</string>
-    <string name="app_search">搜索</string>
     <string name="app_close_search">关闭搜索</string>
 </resources>

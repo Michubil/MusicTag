@@ -106,8 +106,8 @@ function getReleaseApk {
 }
 
 function writeTestSummary {
-    param($Context)
-    foreach ($module in @('app', 'core/designsystem')) {
+    param($Context, [string[]]$Modules = @('app', 'core/designsystem'))
+    foreach ($module in $Modules) {
         $reports = Join-Path $Context.Root "$module/build/test-results/testDebugUnitTest"
         $files = @(Get-ChildItem -LiteralPath $reports -Filter 'TEST-*.xml' -File -ErrorAction Stop)
         if ($files.Count -eq 0) { throw "Missing test results for $module." }

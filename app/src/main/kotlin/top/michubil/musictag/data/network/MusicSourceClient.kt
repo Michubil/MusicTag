@@ -6,7 +6,6 @@ import top.michubil.musictag.data.model.*
 data class SearchPage(
     val candidates: List<SongCandidate>,
     val nextPage: Int? = null,
-    val issues: List<String> = emptyList(),
 )
 
 interface MusicSourceClient {

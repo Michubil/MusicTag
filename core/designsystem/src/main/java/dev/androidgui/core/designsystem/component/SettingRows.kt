@@ -99,23 +99,6 @@ fun SettingChoiceRow(
 }
 
 @Composable
-fun SettingInfoRow(
-    title: String,
-    summary: String? = null,
-    icon: AppIcon,
-) {
-    PreferenceSurface(interactionSource = null) {
-        PreferenceHeader(
-            title = title,
-            summary = summary,
-            icon = icon,
-            enabled = true,
-            modifier = Modifier.semantics(mergeDescendants = true) {},
-        )
-    }
-}
-
-@Composable
 private fun PreferenceHeader(
     title: String,
     summary: String?,

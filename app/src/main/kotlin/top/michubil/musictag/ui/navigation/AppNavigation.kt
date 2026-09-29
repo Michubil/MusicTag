@@ -265,7 +265,7 @@ private fun AppNavigation(
     val menuVisible = browserVisible || albumsVisible || albumSearchVisible || albumTracksVisible
     AppScaffold(
         screenKey = entry?.id,
-        modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog || state.sourceDialog != null) && settingsVisible) || (state.sortDialog && (browserVisible || albumSearchVisible)) ||
+        modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog) && settingsVisible) || (state.sortDialog && (browserVisible || albumSearchVisible)) ||
             ((state.albumSortDialog || state.albumColumnsDialog) && albumsVisible) ||
             (state.availableUpdate != null && aboutVisible) || (editMenuExpanded && showFileActions),
         topBar = {

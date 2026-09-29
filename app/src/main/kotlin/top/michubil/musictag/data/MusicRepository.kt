@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.media.MediaMetadataRetriever
+import android.util.LruCache
 import androidx.core.net.toUri
 import top.michubil.musictag.data.cache.MusicCache
 import top.michubil.musictag.data.edit.*
@@ -38,7 +39,6 @@ import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.map
 import top.michubil.musictag.data.network.MetadataSourcesClient
 import top.michubil.musictag.data.network.AcoustIdClient
-import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.rename.RenameEntry
 import top.michubil.musictag.data.rename.RenameInputs
@@ -74,20 +74,13 @@ class MusicRepository(
     private val appContext = context.applicationContext
     private val acoustId = AcoustIdClient()
 
-    suspend fun recognizeAudio(document: MusicDocument): List<FingerprintSuggestion> {
-        acoustId.requireConfigured()
-        val fingerprint = withLocalCopy(document) { file ->
-            val duration = runCatching { readLocalTrack(file).durationMs }.getOrNull()
-            AudioFingerprinter.calculate(file, duration)
-        }
-        return networkSlots.withPermit { acoustId.lookup(fingerprint) }
-    }
     private val storage = SafStorage(context)
     private val browseCache = MusicCache(context)
     private val audioFilter = AudioFileFilter(probe = { probeDuration(it) })
     private val renamer = SafFileRenamer(storage)
     private val networkSlots = Semaphore(4)
-    private val fingerprintSlots = Semaphore(1)
+    private val candidateArtworks = LruCache<String, Bitmap>(32)
+    private val fingerprintSlots = Semaphore(2)
     private val committer = SafAudioCommitter(storage, File(context.noBackupFilesDir, "saf-writes"))
     private val commitGate = Mutex()
     private val flacEdit = Mutex()
@@ -346,6 +339,20 @@ class MusicRepository(
         return networkSlots.withPermit { client.candidates(track, options, query) }
     }
 
+    suspend fun candidateArtwork(candidate: SongCandidate): Bitmap? {
+        val key = "${candidate.key}:${candidate.albumId}:${candidate.coverUrl}"
+        candidateArtworks.get(key)?.let { return it }
+        val cover = try {
+            networkSlots.withPermit { client.candidateCover(candidate) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return null
+        }
+        return cover?.let { withContext(LocalFileWork.dispatcher) { decodeArtwork(it.bytes, 128) } }
+            ?.also { candidateArtworks.put(key, it) }
+    }
+
     suspend fun readRenameInputs(
         selection: List<MusicDocument>, recursive: Boolean, filters: AudioFilters,
         onProgress: suspend (ScanProgress) -> Unit = {},
@@ -444,6 +451,7 @@ class MusicRepository(
             val reusable = session?.takeIf { it.sources == options.sources && it.policies == options.policies }
             val automatic = if (forcedCandidate == null && reusable == null && options.policies.values.any { it.enabled }) {
                 AutomaticMatchResolver.resolve(
+                    track = track,
                     search = { query -> networkSlots.withPermit { client.candidates(track, options, query) } },
                     recognize = {
                         acoustId.requireConfigured()
@@ -454,11 +462,9 @@ class MusicRepository(
             } else null
             val prepared = networkSlots.withPermit {
                 client.metadata(track, options, forcedCandidate,
-                    automatic?.search ?: reusable?.search, automatic?.query ?: reusable?.query)
+                    automatic?.search ?: reusable?.search, automatic?.query)
             }
-            if (prepared.disposition.kind != ScrapeKind.COMPLETE && prepared.disposition.kind != ScrapeKind.PARTIAL) {
-                return@withDigestedLocalCopy prepared.disposition
-            }
+            prepared.stop?.let { return@withDigestedLocalCopy it }
             val formatted = if (options.formatLyricsTimeline) {
                 prepared.metadata.copy(lyrics = prepared.metadata.lyrics.map(LyricsCodec::formatTimeline))
             } else prepared.metadata

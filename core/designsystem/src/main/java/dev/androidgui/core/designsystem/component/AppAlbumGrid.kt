@@ -62,7 +62,6 @@ data class AppAlbumCard(
     val id: String,
     val title: String,
     val summary: String,
-    val artwork: ImageBitmap?,
     val indexLetter: String,
 )
 
@@ -73,17 +72,8 @@ fun AppAlbumGrid(
     albums: List<AppAlbumCard>,
     minColumns: Int,
     onAlbumClick: (String) -> Unit,
-) {
-    AppAlbumGrid(albums, minColumns, onAlbumClick) { it.artwork }
-}
-
-@Composable
-fun AppAlbumGrid(
-    albums: List<AppAlbumCard>,
-    minColumns: Int,
-    onAlbumClick: (String) -> Unit,
-    state: LazyGridState = rememberLazyGridState(),
     artwork: @Composable (AppAlbumCard) -> ImageBitmap?,
+    state: LazyGridState = rememberLazyGridState(),
 ) {
     val letterTargets = remember(albums) { buildAlbumIndexTargets(albums) }
     val bottomPadding = LocalAppContentBottomPadding.current

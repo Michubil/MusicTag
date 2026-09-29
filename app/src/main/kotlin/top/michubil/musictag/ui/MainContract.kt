@@ -4,11 +4,8 @@ import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
-import top.michubil.musictag.data.match.RankedCandidate
-import top.michubil.musictag.data.network.FingerprintSuggestion
 import top.michubil.musictag.data.model.FieldPolicy
 import top.michubil.musictag.data.model.MetadataField
-import top.michubil.musictag.data.model.MetadataGroup
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
@@ -37,13 +34,8 @@ data class MainUiState(
     val renameError: String? = null,
     val policies: Map<MetadataField, FieldPolicy> = MetadataField.entries.associateWith { FieldPolicy() },
     val recursive: Boolean = false,
-    val candidates: List<RankedCandidate> = emptyList(),
-    val fingerprintSuggestions: List<FingerprintSuggestion> = emptyList(),
-    val fingerprintNotice: String? = null,
-    val fingerprintLoading: Boolean = false,
+    val candidates: List<SongCandidate> = emptyList(),
     val candidateNotice: String? = null,
-    val queryTitle: String = "",
-    val queryArtists: String = "",
     val unresolved: List<UnresolvedMatch> = emptyList(),
     val candidateError: String? = null,
     val loading: Boolean = true,
@@ -64,7 +56,6 @@ data class MainUiState(
     val sortDescending: Boolean = false,
     val formatLyricsTimeline: Boolean = true,
     val scrapeSources: ScrapeSources = ScrapeSources(),
-    val sourceDialog: MetadataGroup? = null,
     val searching: Boolean = false,
     val searchQuery: String = "",
     val searchItems: List<FileItem> = emptyList(),

@@ -3,17 +3,18 @@ package top.michubil.musictag.data
 import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.SourceSelection
 import top.michubil.musictag.data.model.defaultSourceSelections
+import top.michubil.musictag.data.model.sourceSelections
 
-/** Ordered `SOURCE=0/1` entries. Unknown sources are dropped; a malformed category is unusable. */
+/** Persist source switches in a stable order; previously saved order has no matching priority. */
 internal object SourceSelections {
-    fun encode(selections: List<SourceSelection>): String = selections.joinToString(",") { selection ->
-        selection.source.name + "=" + if (selection.enabled) "1" else "0"
+    fun encode(selections: List<SourceSelection>): String = MusicSource.entries.joinToString(",") { source ->
+        source.name + "=" + if (selections.any { it.source == source && it.enabled }) "1" else "0"
     }
 
     fun decode(raw: String?): List<SourceSelection>? {
         if (raw.isNullOrBlank()) return null
-        val seen = linkedSetOf<MusicSource>()
-        val parsed = mutableListOf<SourceSelection>()
+        val seen = mutableSetOf<MusicSource>()
+        val parsed = mutableMapOf<MusicSource, Boolean>()
         for (part in raw.split(',')) {
             val bits = part.split('=')
             if (bits.size != 2) return null
@@ -24,29 +25,15 @@ internal object SourceSelections {
                 "0" -> false
                 else -> return null
             }
-            parsed += SourceSelection(source, enabled)
+            parsed[source] = enabled
         }
         if (parsed.isEmpty()) return null
-        for (source in MusicSource.entries) {
-            if (source !in seen) parsed += SourceSelection(source, enabled = false)
-        }
-        return parsed
+        return MusicSource.entries.map { source -> SourceSelection(source, parsed[source] ?: false) }
     }
 
     fun migrate(orderName: String?): List<SourceSelection> = when (orderName) {
-        null, "NETEASE_FIRST" -> defaultSourceSelections()
-        "QQ_FIRST" -> listOf(
-            SourceSelection(MusicSource.QQ, enabled = true),
-            SourceSelection(MusicSource.NETEASE, enabled = true),
-        )
-        "NETEASE_ONLY" -> listOf(
-            SourceSelection(MusicSource.NETEASE, enabled = true),
-            SourceSelection(MusicSource.QQ, enabled = false),
-        )
-        "QQ_ONLY" -> listOf(
-            SourceSelection(MusicSource.QQ, enabled = true),
-            SourceSelection(MusicSource.NETEASE, enabled = false),
-        )
+        "NETEASE_ONLY" -> sourceSelections(MusicSource.NETEASE)
+        "QQ_ONLY" -> sourceSelections(MusicSource.QQ)
         else -> defaultSourceSelections()
     }
 }

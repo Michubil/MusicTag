@@ -3,11 +3,6 @@ package top.michubil.musictag.data.match
 import top.michubil.musictag.data.model.LocalTrack
 
 internal object QueryPlan {
-    fun display(track: LocalTrack, user: UserQuery?): Pair<String, String> {
-        val reading = readings(track, user).firstOrNull { !it.requiresBoth } ?: return "" to ""
-        return reading.title to reading.artists.joinToString(" / ")
-    }
-
     fun plannedQueries(track: LocalTrack, user: UserQuery?): List<String> {
         val primary = readings(track, user).firstOrNull { !it.requiresBoth } ?: return emptyList()
         val queries = mutableListOf<String>()

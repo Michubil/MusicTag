@@ -52,7 +52,7 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
     override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>): ScrapedMetadata {
         require(candidate.source == source && candidate.id > 0)
         if (fields.isEmpty()) return ScrapedMetadata()
-        val needsDetail = fields.any { it in MetadataGroup.TAGS.fields } ||
+        val needsDetail = fields.any { it in MetadataField.tagFields } ||
             (MetadataField.COVER in fields && candidate.coverUrl == null) ||
             (MetadataField.LYRICS in fields && candidate.mid == null)
         val song = if (needsDetail) sourceResult { fetchSongDetail(candidate.id) }.getOrNull() else null
@@ -150,21 +150,15 @@ class QqMusicClient internal constructor(private val transport: MusicTransport) 
     }
 
     private fun parseCandidates(songs: JSONArray): SearchPage {
-        val issues = mutableListOf<String>()
         val candidates = mutableListOf<SongCandidate>()
-        var rows = 0
         for (index in 0 until songs.length()) {
             val song = songs.optJSONObject(index)
-            if (song == null) {
-                issues += "第${index + 1}行不是歌曲对象"
-                continue
-            }
-            rows++
+            if (song == null) continue
             val candidate = candidateFromSong(song)
-            if (candidate == null) issues += "第${index + 1}行缺少有效字段" else candidates += candidate
+            if (candidate != null) candidates += candidate
         }
-        if (rows > 0 && candidates.isEmpty()) error("QQ 音乐搜索结果无法解析")
-        return SearchPage(candidates.distinctBy(SongCandidate::key), issues = issues)
+        if (songs.length() > 0 && candidates.isEmpty()) error("QQ 音乐搜索结果无法解析")
+        return SearchPage(candidates.distinctBy(SongCandidate::key))
     }
 
     private fun candidateFromSong(song: JSONObject): SongCandidate? {
