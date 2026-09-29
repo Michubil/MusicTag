@@ -11,21 +11,27 @@ internal data class FoundCandidate(
 internal data class Decision(val ranked: List<SongCandidate>, val outcome: MatchOutcome)
 
 internal object RecordingMatch {
+    fun accept(track: LocalTrack, search: CandidateSearch, candidate: SongCandidate, basis: String): CandidateSearch {
+        val recording = search.ranked.filter { supportsRecording(track, candidate, it) }
+        return search.copy(outcome = MatchOutcome.Accept(candidate,
+            selectRelease(recording, track.album) ?: candidate, basis))
+    }
+
     fun decide(track: LocalTrack, found: List<FoundCandidate>, user: UserQuery?): Decision {
         val ranked = found.sortedWith(displayOrder(track, user)).map(FoundCandidate::candidate)
         if (found.isEmpty()) return Decision(ranked, MatchOutcome.None("没有合适候选"))
         if (conflictingInputs(track, user)) return Decision(ranked, MatchOutcome.Review("标签和文件名指向不同歌曲"))
-        val eligible = found.filter { canAccept(track, it.candidate, user) }
+        val eligible = ranked.filter { canAccept(track, it, user) }
         if (eligible.isEmpty()) return Decision(ranked, MatchOutcome.Review(blockReason(track, found, user)))
-        val anchor = eligible.sortedWith(displayOrder(track, user)).first()
-        val anchorScore = rank(requireNotNull(bestEvidence(track, anchor.candidate, user)))
-        val competing = eligible.any { item ->
-            item.candidate.key != anchor.candidate.key && !sameRecording(anchor.candidate, item.candidate) &&
-                rank(requireNotNull(bestEvidence(track, item.candidate, user))) == anchorScore
+        val anchor = eligible.first()
+        val anchorScore = rank(requireNotNull(bestEvidence(track, anchor, user)))
+        val competing = eligible.any { candidate ->
+            candidate.key != anchor.key && !sameRecording(anchor, candidate) &&
+                rank(requireNotNull(bestEvidence(track, candidate, user))) == anchorScore
         }
         if (competing) return Decision(ranked, MatchOutcome.Review("存在其他可能的录音"))
-        val identity = found.filter { supportsRecording(track, anchor.candidate, it.candidate) }.map { it.candidate }
-        return Decision(ranked, MatchOutcome.Accept(anchor.candidate, selectRelease(identity, track.album), "标题和艺术家对应"))
+        val identity = found.map { it.candidate }.filter { supportsRecording(track, anchor, it) }
+        return Decision(ranked, MatchOutcome.Accept(anchor, selectRelease(identity, track.album), "标题和艺术家对应"))
     }
 
     fun canAccept(track: LocalTrack, candidate: SongCandidate, user: UserQuery?): Boolean {
@@ -77,14 +83,9 @@ private fun RecordingMatch.blockReason(track: LocalTrack, found: List<FoundCandi
     }
 }
 
-private fun displayOrder(track: LocalTrack, user: UserQuery?) = Comparator<FoundCandidate> { left, right ->
-    val leftEvidence = bestEvidence(track, left.candidate, user)
-    val rightEvidence = bestEvidence(track, right.candidate, user)
-    compareValues(rightEvidence?.let { rank(it) }, leftEvidence?.let { rank(it) }).takeIf { it != 0 }
-        ?: left.platformRank.compareTo(right.platformRank)
-            .takeIf { it != 0 }
-        ?: left.candidate.key.compareTo(right.candidate.key)
-}
+private fun displayOrder(track: LocalTrack, user: UserQuery?) =
+    compareByDescending<FoundCandidate> { bestEvidence(track, it.candidate, user)?.let(::rank) }
+        .thenBy { it.platformRank }.thenBy { it.candidate.key }
 
 private fun rank(evidence: Evidence): Int {
     var score = 0

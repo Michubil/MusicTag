@@ -13,9 +13,9 @@ import kotlin.time.TimeSource
 
 data class ScanProgress(val completed: Int, val total: Int)
 
-/** Shared local I/O budget, sized to the processors Android makes available to this process. */
+/** Shared local I/O budget for bounded file tasks. */
 internal object LocalFileWork {
-    val parallelism = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    const val parallelism = 6
     val dispatcher = Dispatchers.IO.limitedParallelism(parallelism)
 
     // A fixed number of workers keeps large batches from creating a coroutine/copy per file.

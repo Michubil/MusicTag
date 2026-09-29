@@ -13,8 +13,10 @@ import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.RemoteValue
 import top.michubil.musictag.data.match.MatchOutcome
+import top.michubil.musictag.data.match.AutomaticMatchResolver
 import top.michubil.musictag.data.match.ScrapeKind
 import top.michubil.musictag.data.match.UserQuery
+import top.michubil.musictag.data.match.planWrite
 import top.michubil.musictag.data.model.ScrapeSources
 import top.michubil.musictag.data.model.ScrapedMetadata
 import top.michubil.musictag.data.model.SongCandidate
@@ -31,6 +33,7 @@ class MetadataSourcesClientTest {
         override val source: MusicSource,
         private val find: suspend (String) -> List<SongCandidate>,
         private val data: ScrapedMetadata = ScrapedMetadata(title = RemoteValue.Available("title")),
+        override val supportedFields: Set<MetadataField> = MetadataField.entries.toSet(),
     ) : MusicSourceClient {
         var searches = 0
         var downloads = 0
@@ -44,6 +47,43 @@ class MetadataSourcesClientTest {
             requestedFields += fields
             return data
         }
+    }
+
+    @Test
+    fun qqOnlyDoesNotReportPartialForUnsupportedDisc() = runBlocking {
+        val qq = StubClient(MusicSource.QQ, { listOf(song(MusicSource.QQ)) },
+            supportedFields = MetadataField.entries.toSet() - MetadataField.DISC)
+        val options = ScrapeOptions(
+            policies = setOf(MetadataField.TITLE, MetadataField.DISC).associateWith { FieldPolicy() },
+            sources = ScrapeSources(sourceSelections(MusicSource.QQ)),
+        )
+        val prepared = MetadataSourcesClient(qq).metadata(track, options, null)
+        assertNull(prepared.stop)
+        assertEquals(setOf(MetadataField.DISC), prepared.unsupported)
+        assertEquals(listOf(setOf(MetadataField.TITLE)), qq.requestedFields)
+        assertEquals(ScrapeKind.COMPLETE,
+            planWrite(prepared.metadata, emptyMap(), false, options, prepared.kept, prepared.unsupported).disposition.kind)
+    }
+
+    @Test
+    fun anotherReleaseCannotSupplyQqDiscButSameReleaseFailureIsPartial() = runBlocking {
+        val qqSong = song(MusicSource.QQ)
+        val qq = StubClient(MusicSource.QQ, { error("Manual selection reuses the QQ candidate") },
+            supportedFields = MetadataField.entries.toSet() - MetadataField.DISC)
+        val options = ScrapeOptions(policies = setOf(MetadataField.TITLE, MetadataField.DISC)
+            .associateWith { FieldPolicy() })
+        val otherRelease = StubClient(MusicSource.NETEASE,
+            { listOf(song(MusicSource.NETEASE).copy(album = "other album")) })
+        val unmatched = MetadataSourcesClient(qq, otherRelease).metadata(track, options, qqSong)
+        assertEquals(setOf(MetadataField.DISC), unmatched.unsupported)
+        assertEquals(ScrapeKind.COMPLETE,
+            planWrite(unmatched.metadata, emptyMap(), false, options, unmatched.kept, unmatched.unsupported).disposition.kind)
+
+        val sameRelease = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) })
+        val missing = MetadataSourcesClient(qq, sameRelease).metadata(track, options, qqSong)
+        assertEquals(emptySet<MetadataField>(), missing.unsupported)
+        assertEquals(ScrapeKind.PARTIAL,
+            planWrite(missing.metadata, emptyMap(), false, options, missing.kept, missing.unsupported).disposition.kind)
     }
 
     @Test
@@ -63,6 +103,48 @@ class MetadataSourcesClientTest {
         }
         assertEquals(MusicSource.entries.toSet(), results.ranked.map(SongCandidate::source).toSet())
         assertTrue(results.outcome is MatchOutcome.Accept)
+    }
+
+    @Test
+    fun aSourcesFallbackDoesNotWaitForTheOtherSourcesFirstResponse() = runBlocking {
+        val fallbackStarted = CompletableDeferred<Unit>()
+        val netease = StubClient(MusicSource.NETEASE, {
+            fallbackStarted.await()
+            listOf(song(MusicSource.NETEASE))
+        })
+        val qq = StubClient(MusicSource.QQ, { query ->
+            if (query == "title") {
+                fallbackStarted.complete(Unit)
+                listOf(song(MusicSource.QQ))
+            } else emptyList()
+        })
+        val result = withTimeout(5_000) {
+            MetadataSourcesClient(netease, qq).candidates(track, ScrapeOptions())
+        }
+        assertEquals(MusicSource.entries.toSet(), result.ranked.map { it.source }.toSet())
+        assertEquals(1, netease.searches)
+        assertEquals(2, qq.searches)
+    }
+
+    @Test
+    fun repeatedCandidatesKeepTheirOrderAndShareTheDetailBudgetAcrossQueries() = runBlocking {
+        val detailed = mutableListOf<Long>()
+        val candidates = (1L..5L).map { id ->
+            song(MusicSource.QQ).copy(id = id, artists = listOf("Other artist"), durationMs = null)
+        }
+        val source = object : MusicSourceClient {
+            override val source = MusicSource.QQ
+            override suspend fun search(query: String, page: Int) = SearchPage(candidates + candidates)
+            override suspend fun enrich(candidate: SongCandidate): SongCandidate {
+                detailed += candidate.id
+                return candidate.copy(durationMs = track.durationMs)
+            }
+            override suspend fun metadata(candidate: SongCandidate, fields: Set<MetadataField>) = ScrapedMetadata()
+        }
+        val options = ScrapeOptions(sources = ScrapeSources(sourceSelections(MusicSource.QQ)))
+        val result = MetadataSourcesClient(source).candidates(track, options)
+        assertEquals(listOf(1L, 2L, 3L), detailed)
+        assertEquals(listOf(1L, 2L, 3L, 4L, 5L), result.ranked.map { it.id })
     }
 
     @Test
@@ -88,12 +170,50 @@ class MetadataSourcesClientTest {
         val search = client.candidates(track, options)
         assertEquals(MusicSource.QQ, search.ranked.first().source)
         assertEquals(2, qq.searches)
+        assertEquals(1, netease.searches)
         assertEquals(MusicSource.QQ, (search.outcome as MatchOutcome.Accept).candidate.source)
 
         val automatic = client.metadata(track, options, null, search)
         assertEquals(RemoteValue.Available("QQ title"), automatic.metadata.title)
         assertEquals(0, netease.downloads)
         assertEquals(1, qq.downloads)
+    }
+
+    @Test
+    fun fingerprintStillSearchesAfterWrongTextWasAcceptedOrTextHasNoUsableInformation() = runBlocking {
+        val wrongSong = song(MusicSource.NETEASE).copy(title = "Wrong song", artists = listOf("Wrong artist"))
+        val correct = song(MusicSource.NETEASE).copy(id = 2, title = "Correct song", artists = listOf("Singer"))
+        val inputs = listOf(
+            track.copy(fileName = "Wrong artist - Wrong song.mp3", title = wrongSong.title, artists = wrongSong.artists),
+            track.copy(fileName = "Wrong artist - Wrong song.mp3", title = correct.title, artists = correct.artists),
+            track.copy(fileName = "Singer - Correct song.mp3", title = wrongSong.title, artists = wrongSong.artists),
+            track.copy(fileName = "", title = null, artists = emptyList(), album = null),
+            track.copy(fileName = "random.mp3", title = "Unknown", artists = emptyList(), album = null),
+        )
+        for (local in inputs) {
+            val queries = mutableListOf<String>()
+            val source = StubClient(MusicSource.NETEASE, { query ->
+                queries += query
+                when {
+                    "Correct song" in query -> listOf(correct)
+                    "Wrong song" in query -> listOf(wrongSong)
+                    else -> emptyList()
+                }
+            })
+            val client = MetadataSourcesClient(source)
+            val options = ScrapeOptions(sources = ScrapeSources(sourceSelections(MusicSource.NETEASE)))
+            var recognized = false
+            val resolved = AutomaticMatchResolver.resolve(local,
+                search = { client.candidates(local, options, it) },
+                recognize = {
+                    recognized = true
+                    listOf(FingerprintSuggestion(correct.title, correct.artists, 0.9))
+                })
+            assertTrue(recognized)
+            assertEquals(correct, (resolved.outcome as MatchOutcome.Accept).candidate)
+            assertTrue(queries.any { "Correct song" in it })
+            assertTrue(queries.count { it == "Correct song Singer" } <= 1)
+        }
     }
 
     @Test
@@ -114,6 +234,22 @@ class MetadataSourcesClientTest {
         assertTrue(results.ranked.any { it.source == MusicSource.NETEASE })
         assertTrue(results.outcome is MatchOutcome.Review)
         assertEquals("署名不同", (results.outcome as MatchOutcome.Review).summary)
+    }
+
+    @Test
+    fun automaticDownloadUsesFirstCandidateDespiteManualMatchReview() = runBlocking {
+        val local = track.copy(artists = listOf("Different artist"))
+        val source = StubClient(MusicSource.NETEASE, { listOf(song(MusicSource.NETEASE)) })
+        val options = ScrapeOptions(policies = mapOf(MetadataField.TITLE to FieldPolicy()),
+            sources = ScrapeSources(sourceSelections(MusicSource.NETEASE)))
+        val client = MetadataSourcesClient(source)
+        val search = client.candidates(local, options)
+        assertTrue(search.outcome is MatchOutcome.Review)
+
+        val prepared = client.metadata(local, options, null, search)
+
+        assertNull(prepared.stop)
+        assertEquals(RemoteValue.Available("title"), prepared.metadata.title)
     }
 
     @Test
@@ -267,7 +403,7 @@ class MetadataSourcesClientTest {
         val search = client.candidates(wrong, options, query)
         val searches = source.searches
 
-        val result = client.metadata(wrong, options, null, search, query)
+        val result = client.metadata(wrong, options, null, search)
 
         assertTrue(search.outcome is MatchOutcome.Accept)
         assertEquals(RemoteValue.Available(candidate.title), result.metadata.title)
@@ -484,7 +620,7 @@ class MetadataSourcesClientTest {
 
         val prepared = MetadataSourcesClient(*clients.toTypedArray()).metadata(track, options, null)
 
-        assertEquals(ScrapeKind.REVIEW, prepared.stop?.kind)
+        assertEquals(ScrapeKind.FAILED, prepared.stop?.kind)
         assertEquals(ScrapedMetadata(), prepared.metadata)
         assertTrue(clients.all { it.requestedFields == listOf(setOf(MetadataField.LYRICS)) })
     }

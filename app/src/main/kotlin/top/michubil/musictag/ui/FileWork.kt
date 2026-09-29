@@ -1,11 +1,11 @@
 package top.michubil.musictag.ui
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.ScanProgress
+import top.michubil.musictag.data.operationResult
 
 internal data class FileWorkSummary(val success: Int, val failures: List<String>)
 
@@ -39,12 +39,5 @@ internal suspend fun <T> mapFileResults(
     onProgress: suspend (ScanProgress) -> Unit = {},
     operation: suspend (T) -> Unit,
 ): List<Result<Unit>> = LocalFileWork.map(files, onProgress) { file ->
-    try {
-        operation(file)
-        Result.success(Unit)
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: Exception) {
-        Result.failure(error)
-    }
+    operationResult { operation(file) }
 }

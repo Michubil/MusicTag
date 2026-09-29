@@ -105,24 +105,3 @@ function getReleaseApk {
     (Resolve-Path -LiteralPath (Join-Path $directory $expectedName)).Path
 }
 
-function writeTestSummary {
-    param($Context, [string[]]$Modules = @('app', 'core/designsystem'))
-    foreach ($module in $Modules) {
-        $reports = Join-Path $Context.Root "$module/build/test-results/testDebugUnitTest"
-        $files = @(Get-ChildItem -LiteralPath $reports -Filter 'TEST-*.xml' -File -ErrorAction Stop)
-        if ($files.Count -eq 0) { throw "Missing test results for $module." }
-        $total = 0; $failed = 0; $errors = 0; $skipped = 0
-        foreach ($file in $files) {
-            [xml]$report = Get-Content -LiteralPath $file.FullName -Raw
-            $suite = $report.testsuite
-            $total += [int]$suite.tests
-            $failed += [int]$suite.failures
-            $errors += [int]$suite.errors
-            $skipped += [int]$suite.skipped
-        }
-        if ($total -eq 0 -or $failed -gt 0 -or $errors -gt 0 -or $skipped -gt 0) {
-            throw "Incomplete test results for ${module}: $total total, $failed failures, $errors errors, $skipped skipped."
-        }
-        Write-Output "${module}: $total passed; reports: $reports"
-    }
-}

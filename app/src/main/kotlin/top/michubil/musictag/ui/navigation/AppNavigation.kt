@@ -55,6 +55,20 @@ internal fun shouldLeaveSearch(route: String?) =
 internal fun isAlbumFileWorkRoute(route: String?) = route == Routes.Album || route == Routes.AlbumSearch
 internal enum class TabDecision { Stay, PopToRoot, SwitchRoot }
 
+internal fun fileOperationRoot(route: String?): String? = when (route) {
+    Routes.Options, Routes.Candidates -> Routes.Options
+    Routes.Rename, Routes.Editor -> route
+    else -> null
+}
+
+internal fun dialogForRoute(dialog: MainDialog?, route: String): MainDialog? = dialog?.takeIf {
+    when (it) {
+        MainDialog.DURATION, MainDialog.PATH, MainDialog.THEME -> route == Routes.Settings
+        MainDialog.FILE_SORT -> isBrowserRoute(route) || route == Routes.AlbumSearch
+        MainDialog.ALBUM_SORT, MainDialog.ALBUM_COLUMNS -> route == Routes.Albums
+    }
+}
+
 internal fun browserDirectoryUri(route: String?, rootUri: String?, folderUri: String?): String? = when (route) {
     Routes.Files -> rootUri
     Routes.Folder -> folderUri
@@ -71,7 +85,7 @@ internal fun BrowserDirectoryEffect(entryId: String?, directoryUri: String?, onD
 
 /** Navigation may survive process death, but selection and matching work deliberately do not. */
 internal fun shouldReturnToBrowser(route: String, state: MainUiState): Boolean =
-    (route == Routes.Options || route == Routes.Candidates || route == Routes.Rename || route == Routes.Editor) && state.selected.isEmpty() && !state.busy
+    fileOperationRoot(route) != null && state.selected.isEmpty() && !state.busy
 
 internal fun tabDecision(current: String, target: String, fileWorkRoot: String = Routes.Files): TabDecision = when {
     current == target -> TabDecision.Stay
@@ -142,7 +156,6 @@ private fun AppNavigation(
     val albumSearchVisible = route == Routes.AlbumSearch
     val albumTracksVisible = route == Routes.Album
     val showFileActions = isFileWorkRoute(route) && state.canEditSelection
-    val settingsVisible = route == Routes.Settings
     val aboutVisible = route == Routes.About
     val currentRoot = rootRoute(route, fileWorkRoot)
     val appName = stringResource(R.string.app_name)
@@ -168,7 +181,7 @@ private fun AppNavigation(
         if (entry != null && route != Routes.Candidates) model.cancelCandidateSearch()
         if (entry != null && route != Routes.Rename) model.cancelRenamePreview()
         if (entry != null && route != Routes.Editor) model.cancelTagEditor()
-        model.dismissTransientUi()
+        model.dismissDialog()
         fileMenuExpanded = false
         editMenuExpanded = false
     }
@@ -176,13 +189,13 @@ private fun AppNavigation(
         if (shouldLeaveSearch(route)) model.leaveSearch()
     }
     val keepAlbumTracks = albumTracksVisible ||
-        (fileWorkRoot == Routes.Albums && route in setOf(Routes.Options, Routes.Candidates, Routes.Rename, Routes.Editor))
+        (fileWorkRoot == Routes.Albums && fileOperationRoot(route) != null)
     LaunchedEffect(keepAlbumTracks) {
         if (!keepAlbumTracks) model.leaveAlbum()
     }
     LaunchedEffect(route, state.selected.isEmpty(), state.busy) {
         if (shouldReturnToBrowser(route, state)) {
-            nav.popBackStack(if (route == Routes.Editor) Routes.Editor else if (route == Routes.Rename) Routes.Rename else Routes.Options, inclusive = true)
+            fileOperationRoot(route)?.let { nav.popBackStack(it, inclusive = true) }
         }
     }
     LaunchedEffect(lifecycle, pendingTab, route) {
@@ -195,7 +208,7 @@ private fun AppNavigation(
                 else -> Routes.Settings
             }
             if (tabDecision(route, target, fileWorkRoot) != TabDecision.Stay) {
-                model.dismissTransientUi()
+                model.dismissDialog()
                 fileWorkRoot = if (target == Routes.Albums) Routes.Albums else Routes.Files
                 selectTopLevel(nav, route, target, fileWorkRoot)
             }
@@ -205,6 +218,12 @@ private fun AppNavigation(
         model.effects.collect { effect ->
             val currentEntry = nav.currentBackStackEntry
             val current = currentEntry?.destination?.route
+            fun openFileOperation(destination: String) {
+                if (isFileWorkRoute(current)) {
+                    fileWorkRoot = if (isAlbumFileWorkRoute(current)) Routes.Albums else Routes.Files
+                    nav.navigate(destination) { launchSingleTop = true }
+                }
+            }
             when (effect) {
                 is MainEffect.OpenDirectory -> if (
                     isDirectoryRoute(current) && currentEntry?.lifecycle?.currentState == Lifecycle.State.RESUMED &&
@@ -218,23 +237,12 @@ private fun AppNavigation(
                     isDirectoryRoute(current) -> nav.navigate(Routes.Search) { launchSingleTop = true }
                 }
                 MainEffect.CloseSearch -> if (isSearchRoute(current)) nav.popBackStack()
-                MainEffect.OpenOptions -> if (isFileWorkRoute(current)) {
-                    fileWorkRoot = if (isAlbumFileWorkRoute(current)) Routes.Albums else Routes.Files
-                    nav.navigate(Routes.Options) { launchSingleTop = true }
-                }
-                MainEffect.OpenRename -> if (isFileWorkRoute(current)) {
-                    fileWorkRoot = if (isAlbumFileWorkRoute(current)) Routes.Albums else Routes.Files
-                    nav.navigate(Routes.Rename) { launchSingleTop = true }
-                }
-                MainEffect.OpenTagEditor -> if (isFileWorkRoute(current)) {
-                    fileWorkRoot = if (isAlbumFileWorkRoute(current)) Routes.Albums else Routes.Files
-                    nav.navigate(Routes.Editor) { launchSingleTop = true }
-                }
+                MainEffect.OpenOptions -> openFileOperation(Routes.Options)
+                MainEffect.OpenRename -> openFileOperation(Routes.Rename)
+                MainEffect.OpenTagEditor -> openFileOperation(Routes.Editor)
                 MainEffect.ChooseTagCover -> if (current == Routes.Editor) latestCoverPicker()
                 MainEffect.OpenCandidates -> if (current == Routes.Options) nav.navigate(Routes.Candidates) { launchSingleTop = true }
-                MainEffect.ReturnToBrowser -> if (current == Routes.Options || current == Routes.Candidates || current == Routes.Rename || current == Routes.Editor) {
-                    nav.popBackStack(if (current == Routes.Editor) Routes.Editor else if (current == Routes.Rename) Routes.Rename else Routes.Options, inclusive = true)
-                }
+                MainEffect.ReturnToBrowser -> fileOperationRoot(current)?.let { nav.popBackStack(it, inclusive = true) }
                 MainEffect.ChooseStorageTree -> latestDirectoryPicker()
                 MainEffect.OpenAbout -> if (current == Routes.Settings) nav.navigate(Routes.About) { launchSingleTop = true }
                 is MainEffect.OpenUrl -> latestUrlOpener(effect.url)
@@ -250,29 +258,28 @@ private fun AppNavigation(
     }
     val visibleItems = state.visibleItems
     val allSelected = visibleItems.isNotEmpty() && visibleItems.all { it.document.uri in state.selected }
-    val fileMenu = if (browserVisible || albumSearchVisible) buildList {
-        if (browserVisible && !searchVisible) add(AppMenuItem("folder", if (state.treeUri == null) "选择文件夹" else "更换文件夹", AppIcons.Folder, !state.busy && !state.loading))
-        add(AppMenuItem("sort", "排序", AppIcons.Sort, state.canSort))
-        add(AppMenuItem("all", if (allSelected) "取消全选" else "全选", AppIcons.Check, state.canSelectFiles && visibleItems.isNotEmpty()))
-        if (state.selected.isNotEmpty()) add(AppMenuItem("clear", "清除选择", AppIcons.Check))
-    } else if (albumsVisible) listOf(
-        AppMenuItem("album_sort", "排序", AppIcons.Sort, !state.busy && !state.libraryLoading),
-        AppMenuItem("album_columns", "最小列数", AppIcons.Grid, !state.busy),
-    ) else if (albumTracksVisible) buildList {
-        add(AppMenuItem("all", if (allSelected) "取消全选" else "全选", AppIcons.Check, state.canSelectFiles && visibleItems.isNotEmpty()))
-        if (state.selected.isNotEmpty()) add(AppMenuItem("clear", "清除选择", AppIcons.Check))
-    } else emptyList()
-    val menuVisible = browserVisible || albumsVisible || albumSearchVisible || albumTracksVisible
+    val fileMenu = buildList {
+        if (isDirectoryRoute(route)) add(AppMenuItem("folder", if (state.treeUri == null) "选择文件夹" else "更换文件夹", AppIcons.Folder, !state.busy && !state.loading))
+        if (browserVisible || albumSearchVisible) add(AppMenuItem("sort", "排序", AppIcons.Sort, state.canSort))
+        if (isFileWorkRoute(route)) {
+            add(AppMenuItem("all", if (allSelected) "取消全选" else "全选", AppIcons.Check, state.canSelectFiles && visibleItems.isNotEmpty()))
+            if (state.selected.isNotEmpty()) add(AppMenuItem("clear", "清除选择", AppIcons.Check))
+        }
+        if (albumsVisible) {
+            add(AppMenuItem("album_sort", "排序", AppIcons.Sort, !state.busy && !state.libraryLoading))
+            add(AppMenuItem("album_columns", "最小列数", AppIcons.Grid, !state.busy))
+        }
+    }
+    val visibleDialog = dialogForRoute(state.dialog, route)
+    val showUpdate = state.availableUpdate != null && aboutVisible
     AppScaffold(
         screenKey = entry?.id,
-        modalVisible = ((state.themeDialog || state.durationDialog || state.pathDialog) && settingsVisible) || (state.sortDialog && (browserVisible || albumSearchVisible)) ||
-            ((state.albumSortDialog || state.albumColumnsDialog) && albumsVisible) ||
-            (state.availableUpdate != null && aboutVisible) || (editMenuExpanded && showFileActions),
+        modalVisible = visibleDialog != null || showUpdate || (editMenuExpanded && showFileActions),
         topBar = {
             AppTopBar(
                 title = title,
                 menuItems = fileMenu,
-                menuExpanded = fileMenuExpanded && menuVisible,
+                menuExpanded = fileMenuExpanded && fileMenu.isNotEmpty(),
                 onMenuExpandedChange = { fileMenuExpanded = it },
                 onMenuItemClick = { id ->
                     fileMenuExpanded = false
@@ -328,13 +335,11 @@ private fun AppNavigation(
             predictivePopEnterTransition = { _ -> transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
             predictivePopExitTransition = { _ -> transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
         ) {
-            composable(Routes.Search) {
-                LaunchedEffect(Unit) { model.activateSearch() }
-                SearchPage(state, model)
-            }
-            composable(Routes.AlbumSearch) {
-                LaunchedEffect(Unit) { model.activateSearch() }
-                SearchPage(state, model)
+            listOf(Routes.Search, Routes.AlbumSearch).forEach { searchRoute ->
+                composable(searchRoute) {
+                    LaunchedEffect(Unit) { model.activateSearch() }
+                    SearchPage(state, model)
+                }
             }
             composable(Routes.Files) { files ->
                 DirectoryPage(state.root?.uri, files.id == entry?.id, state, model)
@@ -358,7 +363,7 @@ private fun AppNavigation(
             ) { AlbumTracksPage(state, model) }
         }
     }
-    MainDialogs(state, settingsVisible, browserVisible || albumSearchVisible, aboutVisible, albumsVisible, model)
+    MainDialogs(state, visibleDialog, showUpdate, model)
 }
 
 /** Freeze an outgoing folder while its exit/predictive-back transition is still on screen. */

@@ -10,14 +10,11 @@ import top.michubil.musictag.data.cache.MusicCache
 import top.michubil.musictag.data.edit.*
 import top.michubil.musictag.data.model.CoverImage
 import top.michubil.musictag.data.model.CoverImages
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import top.michubil.musictag.data.flac.FlacCodec
 import top.michubil.musictag.data.fingerprint.AudioFingerprinter
@@ -32,6 +29,7 @@ import top.michubil.musictag.data.match.ScrapeDisposition
 import top.michubil.musictag.data.match.ScrapeKind
 import top.michubil.musictag.data.match.UserQuery
 import top.michubil.musictag.data.match.planWrite
+import top.michubil.musictag.data.match.fieldsToFetch
 import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.LocalTrack
 import top.michubil.musictag.data.model.ScrapeOptions
@@ -78,14 +76,11 @@ class MusicRepository(
     private val browseCache = MusicCache(context)
     private val audioFilter = AudioFileFilter(probe = { probeDuration(it) })
     private val renamer = SafFileRenamer(storage)
-    private val networkSlots = Semaphore(4)
+    private val networkSlots = Semaphore(LocalFileWork.parallelism)
     private val candidateArtworks = LruCache<String, Bitmap>(32)
-    private val fingerprintSlots = Semaphore(2)
+    private val fingerprintSlots = Semaphore(LocalFileWork.parallelism)
     private val committer = SafAudioCommitter(storage, File(context.noBackupFilesDir, "saf-writes"))
-    private val commitGate = Mutex()
-    private val flacEdit = Mutex()
-    private val mp3Edit = Mutex()
-    private val wavEdit = Mutex()
+    private val commitSlots = Semaphore(LocalFileWork.parallelism)
     private val workDirectory = File(context.cacheDir, "saf-work").apply {
         check(isDirectory || mkdirs()) { "无法创建音频工作目录" }
         // Only disposable private working copies; recovery records and originals live elsewhere.
@@ -115,7 +110,7 @@ class MusicRepository(
     fun root(treeUri: String) = storage.root(treeUri)
     suspend fun recover(treeUri: String) {
         if (treeUri in committer.pendingTrees()) clearBrowseCache(treeUri)
-        commitGate.withLock { committer.recover(treeUri) }
+        withExclusiveCommitAccess { committer.recover(treeUri) }
     }
 
     fun directory(treeUri: String, uri: String): MusicDocument =
@@ -198,12 +193,10 @@ class MusicRepository(
         return files to liveUris
     }
 
-    private suspend fun readLibraryEntry(document: MusicDocument): LibraryEntry = try {
+    private suspend fun readLibraryEntry(document: MusicDocument): LibraryEntry = operationResult {
         val metadata = readTextMetadata(document)
         LibraryEntry(document, TagSearch.fields(document.name, metadata = metadata), TagSearch.track(document.name, metadata))
-    } catch (error: CancellationException) {
-        throw error
-    } catch (_: Exception) {
+    }.getOrElse {
         LibraryEntry(document, listOf(document.name), null)
     }
 
@@ -316,10 +309,8 @@ class MusicRepository(
         null
     }
 
-    private fun readLocalTrack(file: File): LocalTrack = AudioMetadataReader.readTrack(file)
-
     private suspend fun trackForMatching(document: MusicDocument, file: File): LocalTrack {
-        val track = readLocalTrack(file).copy(fileName = document.name)
+        val track = AudioMetadataReader.readTrack(file).copy(fileName = document.name)
         if (track.durationMs != null) return track
         val cached = browseCache.durations(listOf(document))[document]
         return track.copy(durationMs = cached ?: probeDuration(document))
@@ -342,13 +333,9 @@ class MusicRepository(
     suspend fun candidateArtwork(candidate: SongCandidate): Bitmap? {
         val key = "${candidate.key}:${candidate.albumId}:${candidate.coverUrl}"
         candidateArtworks.get(key)?.let { return it }
-        val cover = try {
+        val cover = operationResult {
             networkSlots.withPermit { client.candidateCover(candidate) }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (_: Exception) {
-            return null
-        }
+        }.getOrNull()
         return cover?.let { withContext(LocalFileWork.dispatcher) { decodeArtwork(it.bytes, 128) } }
             ?.also { candidateArtworks.put(key, it) }
     }
@@ -361,21 +348,17 @@ class MusicRepository(
             val documents = expandSelection(selection, recursive, filters)
             val sources = LocalFileWork.map(documents, onProgress) { document ->
                 currentCoroutineContext().ensureActive()
-                try {
+                operationResult {
                     RenameSource(document, readTextMetadata(document))
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    RenameSource(document, error = tagReadFailure(error))
+                }.getOrElse {
+                    RenameSource(document, error = tagReadFailure(it))
                 }
             }
             val siblings = LocalFileWork.map(documents.distinctBy { it.treeUri to it.parentUri }) { document ->
                 currentCoroutineContext().ensureActive()
                 val parentUri = document.parentUri ?: return@map null
                 // Check every sibling, including documents hidden from the audio browser.
-                try { parentUri to storage.browsingChildren(directory(document.treeUri, parentUri)) }
-                catch (error: CancellationException) { throw error }
-                catch (_: Exception) { null }
+                operationResult { parentUri to storage.browsingChildren(directory(document.treeUri, parentUri)) }.getOrNull()
             }.filterNotNull().toMap()
             RenameInputs(sources, siblings)
         }
@@ -395,18 +378,15 @@ class MusicRepository(
             val documents = expandSelection(selection, recursive, filters)
             val results: List<Result<Pair<TagEditSource, Bitmap?>>> = LocalFileWork.map(documents) { document ->
                 currentCoroutineContext().ensureActive()
-                try {
+                operationResult {
                     withDigestedLocalCopy(document) { file, digest ->
                         val parsed = AudioMetadataReader.readEditor(file, includeArtwork = singleFile)
                         val source = TagEditSource(document, digest, parsed.tags)
                         val artwork = if (singleFile) {
                             runCatching { decodeArtworkCandidates(parsed.pictures.getOrThrow(), 1024) }.getOrNull()
                         } else null
-                        Result.success(source to artwork)
+                        source to artwork
                     }
-                } catch (error: CancellationException) { throw error }
-                catch (error: Exception) {
-                    Result.failure(error)
                 }
             }
             val sources = results.mapNotNull { it.getOrNull()?.first }
@@ -434,25 +414,47 @@ class MusicRepository(
     }
 
     suspend fun scrape(
+        documents: List<MusicDocument>,
+        options: ScrapeOptions,
+        forcedCandidate: SongCandidate?,
+        session: MatchSession?,
+        onProgress: suspend (ScanProgress) -> Unit,
+    ): List<Result<ScrapeDisposition>> = withContext(LocalFileWork.dispatcher) {
+        val batchClient = client.forBatch(this)
+        LocalFileWork.map(documents, onProgress) { document ->
+            operationResult {
+                val activeSession = session?.takeIf { forcedCandidate != null && it.sameFile(document) }
+                scrape(document, options, forcedCandidate, activeSession, batchClient)
+            }
+        }
+    }
+
+    private suspend fun scrape(
         document: MusicDocument,
         options: ScrapeOptions,
         forcedCandidate: SongCandidate?,
-        session: MatchSession? = null,
+        session: MatchSession?,
+        batchClient: MetadataSourcesClient,
     ): ScrapeDisposition {
         if (session != null && !session.sameFile(document)) {
-            return ScrapeDisposition(ScrapeKind.REVIEW, "文件已变化，请重新匹配")
+            return ScrapeDisposition(ScrapeKind.FAILED, "文件已变化，请重新匹配")
         }
         val parent = directory(document.treeUri, requireNotNull(document.parentUri))
         require(canSafelyReplace(document, parent)) {
             "${document.name}：提供方不支持安全替换所需的创建、重命名和删除操作"
         }
         return withDigestedLocalCopy(document) { file, originalDigest ->
+            val existing = AudioMetadataReader.readEditor(file, includeArtwork = false).tags
+            val requested = fieldsToFetch(options, existing.text, existing.hasCover, batchClient.supportedFields(options.sources))
+            if (requested.policies.values.none { it.enabled }) {
+                return@withDigestedLocalCopy ScrapeDisposition(ScrapeKind.UNCHANGED)
+            }
             val track = trackForMatching(document, file)
             val reusable = session?.takeIf { it.sources == options.sources && it.policies == options.policies }
-            val automatic = if (forcedCandidate == null && reusable == null && options.policies.values.any { it.enabled }) {
+            val automatic = if (forcedCandidate == null && reusable == null) {
                 AutomaticMatchResolver.resolve(
                     track = track,
-                    search = { query -> networkSlots.withPermit { client.candidates(track, options, query) } },
+                    search = { query -> networkSlots.withPermit { batchClient.candidates(track, requested, query) } },
                     recognize = {
                         acoustId.requireConfigured()
                         val fingerprint = fingerprintSlots.withPermit { AudioFingerprinter.calculate(file, track.durationMs) }
@@ -461,15 +463,15 @@ class MusicRepository(
                 )
             } else null
             val prepared = networkSlots.withPermit {
-                client.metadata(track, options, forcedCandidate,
-                    automatic?.search ?: reusable?.search, automatic?.query)
+                batchClient.metadata(track, requested, forcedCandidate,
+                    automatic ?: reusable?.search)
             }
             prepared.stop?.let { return@withDigestedLocalCopy it }
             val formatted = if (options.formatLyricsTimeline) {
                 prepared.metadata.copy(lyrics = prepared.metadata.lyrics.map(LyricsCodec::formatTimeline))
             } else prepared.metadata
-            val existing = AudioMetadataReader.readEditor(file, includeArtwork = false).tags
-            val plan = planWrite(formatted, existing.text, existing.hasCover, options, prepared.kept)
+            val plan = planWrite(formatted, existing.text, existing.hasCover, requested, prepared.kept,
+                prepared.unsupported)
             if (plan.disposition.kind != ScrapeKind.COMPLETE && plan.disposition.kind != ScrapeKind.PARTIAL) {
                 return@withDigestedLocalCopy plan.disposition
             }
@@ -483,16 +485,29 @@ class MusicRepository(
         file: File, metadata: ScrapedMetadata, options: ScrapeOptions,
     ) {
         when (document.extension) {
-            "flac" -> flacEdit.withLock { flacEditor.update(file, metadata, options) }
-            "mp3" -> mp3Edit.withLock { mp3Editor.update(file, metadata, options) }
-            "wav" -> wavEdit.withLock { wavEditor.update(file, metadata, options) }
+            "flac" -> flacEditor.update(file, metadata, options)
+            "mp3" -> mp3Editor.update(file, metadata, options)
+            "wav" -> wavEditor.update(file, metadata, options)
             else -> error("不支持的音频格式")
         }
         currentCoroutineContext().ensureActive()
         // Once committing, finish or reconcile before honoring coroutine cancellation.
         withContext(NonCancellable) {
-            try { commitGate.withLock { committer.commit(document, parent, originalDigest, file) } }
+            try { commitSlots.withPermit { committer.commit(document, parent, originalDigest, file) } }
             finally { invalidateCache(document) }
+        }
+    }
+
+    private suspend fun <T> withExclusiveCommitAccess(block: () -> T): T {
+        var acquired = 0
+        try {
+            repeat(LocalFileWork.parallelism) {
+                commitSlots.acquire()
+                acquired++
+            }
+            return block()
+        } finally {
+            repeat(acquired) { commitSlots.release() }
         }
     }
 

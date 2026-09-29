@@ -204,15 +204,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearSelection() { mutableState.update { it.copy(selected = emptySet()) } }
 
     fun showOptions() {
-        if (canStartFileOperation()) {
+        if (mutableState.value.canEditSelection) {
             effectChannel.trySend(MainEffect.OpenOptions)
         }
     }
 
     fun showRename() {
-        if (canStartFileOperation()) {
+        if (mutableState.value.canEditSelection) {
             effectChannel.trySend(MainEffect.OpenRename)
-            loadRenameInputs()
+            reloadRename()
         }
     }
 
@@ -230,18 +230,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun reloadRename() { loadRenameInputs() }
-
-    fun cancelRenamePreview() { resetRenamePreview() }
-
     fun showTagEditor() {
-        if (canStartFileOperation()) {
+        if (mutableState.value.canEditSelection) {
             effectChannel.trySend(MainEffect.OpenTagEditor)
-            loadTags()
+            reloadTags()
         }
     }
-
-    fun reloadTags() { loadTags() }
 
     fun cancelTagEditor() { tagEditor.close() }
 
@@ -258,7 +252,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun chooseTagCover() {
-        if (canStartFileOperation() && mutableState.value.editor.canChange) {
+        if (mutableState.value.canEditSelection && mutableState.value.editor.canChange) {
             effectChannel.trySend(MainEffect.ChooseTagCover)
         }
     }
@@ -267,9 +261,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeTagCover() { if (!mutableState.value.busy) tagEditor.removeCover() }
 
-    fun showDurationFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(durationDialog = true) } }
-
-    fun dismissDurationFilter() { mutableState.update { it.copy(durationDialog = false) } }
+    fun showDurationFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(dialog = MainDialog.DURATION) } }
 
     fun setDurationFilter(seconds: Int) {
         if (!mutableState.value.busy) {
@@ -277,9 +269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun showPathFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(pathDialog = true) } }
-
-    fun dismissPathFilter() { mutableState.update { it.copy(pathDialog = false) } }
+    fun showPathFilter() { if (!mutableState.value.busy) mutableState.update { it.copy(dialog = MainDialog.PATH) } }
 
     fun applyPathFilter(text: String) {
         if (!mutableState.value.busy) {
@@ -320,34 +310,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAutomatic() { startScraping(null, null) }
 
-    fun openUnresolved(match: UnresolvedMatch) {
-        mutableState.update { it.copy(selected = setOf(match.document.uri)) }
-        loadCandidates(listOf(match.document))
-    }
-
     fun chooseCandidate(candidate: SongCandidate) {
         if (candidate in mutableState.value.candidates) {
             startScraping(candidate, matchSession)
         }
     }
 
-    fun dismissTransientUi() {
-        mutableState.update {
-            it.copy(themeDialog = false, sortDialog = false,
-                durationDialog = false, pathDialog = false,
-                albumSortDialog = false, albumColumnsDialog = false)
-        }
-    }
+    fun dismissDialog() { mutableState.update { it.copy(dialog = null) } }
 
     fun consumeMessage() { mutableState.update { it.copy(message = null) } }
 
-    fun showThemeDialog() { mutableState.update { it.copy(themeDialog = true) } }
-
-    fun dismissThemeDialog() { mutableState.update { it.copy(themeDialog = false) } }
+    fun showThemeDialog() { mutableState.update { it.copy(dialog = MainDialog.THEME) } }
 
     fun setTheme(mode: ThemeMode) {
         preferences.setThemeMode(mode)
-        mutableState.update { it.copy(themeDialog = false) }
+        mutableState.update { it.copy(dialog = null) }
     }
 
     fun setDynamicColor(enabled: Boolean) { preferences.setDynamicColor(enabled) }
@@ -367,17 +344,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showSortDialog() {
         if (mutableState.value.canSort) mutableState.update {
-            it.copy(sortDialog = true)
+            it.copy(dialog = MainDialog.FILE_SORT)
         }
     }
-
-    fun dismissSortDialog() { mutableState.update { it.copy(sortDialog = false) } }
 
     fun applySort(sort: FileSort, descending: Boolean) {
         val snapshot = mutableState.value
         if (!snapshot.canSort) return
         preferences.setFileSort(sort, descending)
-        mutableState.update { it.copy(sortDialog = false) }
+        mutableState.update { it.copy(dialog = null) }
         if (!snapshot.searching) refreshDirectory()
     }
 
@@ -414,25 +389,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshLibrary() { if (mutableState.value.canRefreshLibrary) rebuildLibrary(userInitiated = true) }
 
-    fun showAlbumSortDialog() { mutableState.update { it.copy(albumSortDialog = true) } }
-
-    fun dismissAlbumSortDialog() { mutableState.update { it.copy(albumSortDialog = false) } }
+    fun showAlbumSortDialog() { mutableState.update { it.copy(dialog = MainDialog.ALBUM_SORT) } }
 
     fun setAlbumSort(sort: AlbumSort) {
         preferences.setAlbumSort(sort)
         mutableState.update {
-            it.copy(albumSortDialog = false, albumSort = sort)
+            it.copy(dialog = null, albumSort = sort)
         }
     }
 
-    fun showAlbumColumnsDialog() { mutableState.update { it.copy(albumColumnsDialog = true) } }
-
-    fun dismissAlbumColumnsDialog() { mutableState.update { it.copy(albumColumnsDialog = false) } }
+    fun showAlbumColumnsDialog() { mutableState.update { it.copy(dialog = MainDialog.ALBUM_COLUMNS) } }
 
     fun setAlbumMinColumns(columns: Int) {
         val columns = columns.coerceIn(2, 4)
         preferences.setAlbumMinColumns(columns)
-        mutableState.update { it.copy(albumColumnsDialog = false, albumMinColumns = columns) }
+        mutableState.update { it.copy(dialog = null, albumMinColumns = columns) }
     }
 
     fun showAlbums() {
@@ -760,18 +731,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun canStartFileOperation(): Boolean = mutableState.value.canEditSelection
-
-    private fun resetRenamePreview() {
+    fun cancelRenamePreview() {
         renameReadJob?.cancel()
         renameReadJob = null
         renameInputs = null
         mutableState.update { it.copy(renameLoading = false, renameReadProgress = null, renameEntries = emptyList(), renameError = null) }
     }
 
-    private fun loadRenameInputs() {
-        if (!canStartFileOperation()) return
-        resetRenamePreview()
+    fun reloadRename() {
+        if (!mutableState.value.canEditSelection) return
+        cancelRenamePreview()
         val snapshot = mutableState.value
         mutableState.update { it.copy(renameLoading = true) }
         renameReadJob = viewModelScope.launch {
@@ -839,7 +808,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun candidateArtwork(candidate: SongCandidate) = repository.candidateArtwork(candidate)
 
     private fun loadCandidates(documents: List<MusicDocument>? = null) {
-        if (!canStartFileOperation()) return
+        if (!mutableState.value.canEditSelection) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
         val options = snapshot.toScrapeOptions()
@@ -882,7 +851,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startScraping(candidate: SongCandidate?, session: MatchSession?) {
-        if (!canStartFileOperation()) return
+        if (!mutableState.value.canEditSelection) return
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
         val options = snapshot.toScrapeOptions()
@@ -902,29 +871,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 mutableState.update { it.copy(selected = emptySet(), fileProgress = ScanProgress(0, files.size)) }
                 effectChannel.send(MainEffect.ReturnToBrowser)
-                val outcomes = LocalFileWork.map(files, onProgress = { progress ->
+                val outcomes = repository.scrape(files, options, candidate, session, onProgress = { progress ->
                     mutableState.update { it.copy(fileProgress = progress) }
-                }) { file ->
-                    try {
-                        val activeSession = session?.takeIf { candidate != null && it.sameFile(file) }
-                        repository.scrape(file, options, candidate, activeSession)
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Exception) {
+                }).map { result ->
+                    result.getOrElse { error ->
                         top.michubil.musictag.data.match.ScrapeDisposition(ScrapeKind.FAILED, error.userMessage())
                     }
                 }
                 val counts = outcomes.groupingBy { it.kind }.eachCount()
-                val unresolved = files.zip(outcomes).mapNotNull { (file, outcome) ->
-                    if (outcome.kind == ScrapeKind.PARTIAL || outcome.kind == ScrapeKind.REVIEW || outcome.kind == ScrapeKind.FAILED) {
-                        UnresolvedMatch(file, outcome.reason ?: file.name)
-                    } else null
-                }
                 val message = "刮削结束：完成 ${counts[ScrapeKind.COMPLETE] ?: 0}，部分 ${counts[ScrapeKind.PARTIAL] ?: 0}，" +
-                    "未更改 ${counts[ScrapeKind.UNCHANGED] ?: 0}，待复核 ${counts[ScrapeKind.REVIEW] ?: 0}，失败 ${counts[ScrapeKind.FAILED] ?: 0}" +
-                    (unresolved.firstOrNull()?.let { "\n${it.document.name}：${it.reason}" }.orEmpty())
+                    "未更改 ${counts[ScrapeKind.UNCHANGED] ?: 0}，失败 ${counts[ScrapeKind.FAILED] ?: 0}"
                 cancelPreviewLoads()
-                mutableState.update { it.copy(message = message, unresolved = unresolved) }
+                mutableState.update { it.copy(message = message) }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -937,7 +895,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyFilters(filters: AudioFilters) {
         preferences.setAudioFilters(filters)
-        mutableState.update { it.copy(audioFilters = filters, durationDialog = false, pathDialog = false, selected = emptySet()) }
+        mutableState.update { it.copy(audioFilters = filters, dialog = null, selected = emptySet()) }
         refreshDirectory()
         val snapshot = mutableState.value
         if (snapshot.searching || snapshot.albums.isNotEmpty() || snapshot.viewingAlbum) rebuildLibrary()
@@ -970,8 +928,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadTags() {
-        if (!canStartFileOperation()) return
+    fun reloadTags() {
+        if (!mutableState.value.canEditSelection) return
         val snapshot = mutableState.value
         tagEditor.load(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
     }

@@ -12,6 +12,10 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class SafAudioCommitterTest {
     @TempDir lateinit var temporary: Path
@@ -88,6 +92,7 @@ class SafAudioCommitterTest {
     @Test
     fun unavailableProviderKeepsBothCopiesUntilRecoveryCanFinish() {
         val fixture = fixture("offline")
+        val second = fixture.store.add("other.flac", originalBytes)
         fixture.store.hook = { event ->
             if (event == "beforePromote" || event == "beforeRestore") throw IOException("offline")
         }
@@ -95,10 +100,75 @@ class SafAudioCommitterTest {
         assertTrue(fixture.store.names().any { it.startsWith(".musictag-original-") })
         assertTrue(fixture.store.names().any { it.startsWith(".musictag-new-") })
         assertEquals(setOf("tree"), fixture.committer.pendingTrees())
+        assertThrows(IllegalStateException::class.java) {
+            fixture.committer.commit(second, fixture.store.root, digest(originalBytes), fixture.edited)
+        }
         fixture.store.hook = {}
         fixture.committer.recover("tree")
         assertArrayEquals(originalBytes, fixture.store.bytes("song.flac"))
-        assertEquals(listOf("song.flac"), fixture.store.names())
+        assertEquals(listOf("other.flac", "song.flac"), fixture.store.names())
+    }
+
+    @Test
+    fun sixDistinctFilesInOneTreeUploadConcurrentlyAndRecoveryWaits() {
+        val fixture = fixture("parallel")
+        val originals = listOf(fixture.original) + (1..5).map { fixture.store.add("song-$it.flac", originalBytes) }
+        val entered = CountDownLatch(6)
+        val release = CountDownLatch(1)
+        fixture.store.uploadsEntered = entered
+        fixture.store.releaseUploads = release
+        val workers = Executors.newFixedThreadPool(6)
+        try {
+            val writes = originals.map { original ->
+                workers.submit {
+                    fixture.committer.commit(original, fixture.store.root, digest(originalBytes), fixture.edited)
+                }
+            }
+            assertTrue(entered.await(10, TimeUnit.SECONDS), "All six uploads must begin before any finishes")
+            assertThrows(IllegalStateException::class.java) { fixture.committer.recover("tree") }
+            assertThrows(IllegalStateException::class.java) { fixture.commit() }
+            release.countDown()
+            writes.forEach { it.get(10, TimeUnit.SECONDS) }
+            originals.forEach { assertArrayEquals(editedBytes, fixture.store.bytes(it.name)) }
+            assertTrue(fixture.committer.pendingTrees().isEmpty())
+        } finally {
+            release.countDown()
+            workers.shutdownNow()
+        }
+    }
+
+    @Test
+    fun twoInterruptedWritesRecoverIndependently() {
+        val fixture = fixture("parallel-death")
+        val second = fixture.store.add("other.flac", originalBytes)
+        val entered = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        fixture.store.uploadsEntered = entered
+        fixture.store.releaseUploads = release
+        fixture.store.hook = { if (it == "afterWrite") throw ProcessDeath() }
+        val workers = Executors.newFixedThreadPool(2)
+        try {
+            val firstWrite = workers.submit { fixture.commit() }
+            val secondWrite = workers.submit {
+                fixture.committer.commit(second, fixture.store.root, digest(originalBytes), fixture.edited)
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            release.countDown()
+            listOf(firstWrite, secondWrite).forEach { future ->
+                assertTrue(assertThrows(ExecutionException::class.java) {
+                    future.get(5, TimeUnit.SECONDS)
+                }.cause is ProcessDeath)
+            }
+            fixture.store.hook = {}
+            SafAudioCommitter(fixture.store, fixture.journalDirectory).recover("tree")
+            assertEquals(listOf("other.flac", "song.flac"), fixture.store.names())
+            assertArrayEquals(originalBytes, fixture.store.bytes("song.flac"))
+            assertArrayEquals(originalBytes, fixture.store.bytes("other.flac"))
+            assertTrue(fixture.committer.pendingTrees().isEmpty())
+        } finally {
+            release.countDown()
+            workers.shutdownNow()
+        }
     }
 
     @Test
@@ -210,26 +280,37 @@ class SafAudioCommitterTest {
         var hook: (String) -> Unit = {}
         var partialUpload = false
         var nameChangePhase: String? = null
+        var uploadsEntered: CountDownLatch? = null
+        var releaseUploads: CountDownLatch? = null
         val root = MusicDocument("tree", "root", null, "Music", isDirectory = true, canCreate = true)
 
+        @Synchronized
         fun add(name: String, bytes: ByteArray): MusicDocument {
             val doc = MusicDocument("tree", "id-${nextId++}", root.uri, name, canRename = true, canDelete = true)
             nodes[doc.uri] = Node(doc, bytes.copyOf())
             return doc
         }
 
+        @Synchronized
         override fun children(directory: MusicDocument) = nodes.values.map { it.document }
+        @Synchronized
         override fun read(document: MusicDocument): InputStream = ByteArrayInputStream(nodes.getValue(document.uri).bytes)
+        @Synchronized
         override fun create(directory: MusicDocument, name: String, mimeType: String): MusicDocument =
             add(if (nameChangePhase == "Create") "$name (1)" else name, byteArrayOf()).also { hook("afterCreate") }
 
         override fun write(document: MusicDocument, source: InputStream) {
+            uploadsEntered?.countDown()
+            check(releaseUploads?.await(10, TimeUnit.SECONDS) != false) { "Parallel upload timed out" }
             val bytes = source.readBytes()
-            nodes.getValue(document.uri).bytes = if (partialUpload) bytes.copyOf(bytes.size / 2) else bytes
+            synchronized(this) {
+                nodes.getValue(document.uri).bytes = if (partialUpload) bytes.copyOf(bytes.size / 2) else bytes
+            }
             if (partialUpload) throw IOException("disk full")
             hook("afterWrite")
         }
 
+        @Synchronized
         override fun rename(document: MusicDocument, name: String): MusicDocument {
             val phase = when {
                 name.startsWith(".musictag-original-") -> "Backup"
@@ -242,19 +323,20 @@ class SafAudioCommitterTest {
             return add(if (nameChangePhase == phase) "$name (1)" else name, node.bytes).also { hook("after$phase") }
         }
 
+        @Synchronized
         override fun delete(document: MusicDocument) {
             check(nodes.remove(document.uri) != null)
             if (document.name.startsWith(".musictag-original-")) hook("afterDeleteBackup")
         }
 
-        fun names() = nodes.values.map { it.document.name }.sorted()
-        fun bytes(name: String) = nodes.values.single { it.document.name == name }.bytes
-        fun backupBytes() = nodes.values.single { it.document.name.startsWith(".musictag-original-") }.bytes
-        fun onlyDocument() = nodes.values.single().document
-        fun corruptStaged() {
+        @Synchronized fun names() = nodes.values.map { it.document.name }.sorted()
+        @Synchronized fun bytes(name: String) = nodes.values.single { it.document.name == name }.bytes
+        @Synchronized fun backupBytes() = nodes.values.single { it.document.name.startsWith(".musictag-original-") }.bytes
+        @Synchronized fun onlyDocument() = nodes.values.single().document
+        @Synchronized fun corruptStaged() {
             nodes.values.single { it.document.name.startsWith(".musictag-new-") }.bytes = "broken".toByteArray()
         }
-        fun changeOriginal(bytes: ByteArray) {
+        @Synchronized fun changeOriginal(bytes: ByteArray) {
             nodes.values.single { it.document.name == "song.flac" }.bytes = bytes
         }
     }

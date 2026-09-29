@@ -40,8 +40,11 @@ class BrowserStateTest {
 
     @Test
     fun fileProcessingMessageIncludesCompletedAndTotalTaskCounts() {
-        assertEquals("正式处理文件(0/490)", MainUiState(fileProgress = ScanProgress(0, 490)).processingMessage)
-        assertEquals("正式处理文件(490/490)", MainUiState(fileProgress = ScanProgress(490, 490)).processingMessage)
+        val workers = top.michubil.musictag.data.LocalFileWork.parallelism
+        assertEquals("正式处理文件：已完成 0/490（最多${workers}个文件任务并行）",
+            MainUiState(fileProgress = ScanProgress(0, 490)).processingMessage)
+        assertEquals("正式处理文件：已完成 490/490（最多${workers}个文件任务并行）",
+            MainUiState(fileProgress = ScanProgress(490, 490)).processingMessage)
     }
 
     @Test

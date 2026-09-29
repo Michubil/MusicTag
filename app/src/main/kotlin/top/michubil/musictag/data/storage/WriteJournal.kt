@@ -40,6 +40,7 @@ internal data class PendingWrite(
 }
 
 internal class WriteJournal(private val directory: File) {
+    @Synchronized
     fun save(record: PendingWrite) {
         record.validate()
         check(directory.isDirectory || directory.mkdirs()) { "无法保存文件恢复信息" }
@@ -61,6 +62,7 @@ internal class WriteJournal(private val directory: File) {
         }
     }
 
+    @Synchronized
     fun pending(): List<PendingWrite> = directory.listFiles().orEmpty()
         .filter { it.extension == "txn" }
         .map { file ->
@@ -77,6 +79,7 @@ internal class WriteJournal(private val directory: File) {
             }
         }
 
+    @Synchronized
     fun remove(record: PendingWrite) {
         val file = File(directory, "${record.id}.txn")
         check(!file.exists() || file.delete()) { "无法清理文件恢复信息" }

@@ -7,9 +7,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class LocalFileWorkTest {
     @Test
-    fun largeBatchUsesProcessorSizedWorkersAndKeepsResultsAndProgressOrdered() = runBlocking {
+    fun largeBatchUsesSixWorkersAndKeepsResultsAndProgressOrdered() = runBlocking {
         withTimeout(10_000) {
             val workers = minOf(490, LocalFileWork.parallelism)
+            assertEquals(6, workers)
             val started = AtomicInteger()
             val allStarted = CompletableDeferred<Unit>()
             val gate = CompletableDeferred<Unit>()

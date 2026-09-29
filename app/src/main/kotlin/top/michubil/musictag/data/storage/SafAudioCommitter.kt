@@ -17,15 +17,19 @@ class SafAudioCommitter internal constructor(
 ) {
     constructor(store: DocumentStore, journalDirectory: File) : this(store, WriteJournal(journalDirectory))
 
-    @Synchronized
-    fun pendingTrees(): Set<String> = journal.pending().map { it.treeUri }.toSet()
+    private val admission = Any()
+    private val active = mutableMapOf<String, PendingWrite>()
 
-    fun recover(treeUri: String) {
+    fun pendingTrees(): Set<String> = synchronized(admission) {
+        (journal.pending() + active.values).mapTo(mutableSetOf(), PendingWrite::treeUri)
+    }
+
+    fun recover(treeUri: String) = synchronized(admission) {
+        check(active.values.none { it.treeUri == treeUri }) { "仍有文件正在提交" }
         journal.pending().filter { it.treeUri == treeUri }.forEach(::settle)
     }
 
     fun commit(original: MusicDocument, directory: MusicDocument, originalDigest: String, edited: File) {
-        check(journal.pending().none { it.treeUri == original.treeUri }) { "请先完成未结束的文件恢复" }
         require(canSafelyReplace(original, directory)) {
             "此文件夹或文件不支持安全替换所需的创建、重命名和删除操作"
         }
@@ -35,51 +39,68 @@ class SafAudioCommitter internal constructor(
             UUID.randomUUID().toString(), original.treeUri, directory.uri, original.name, original.uri,
             originalDigest, replacementDigest, original.extension,
         )
-        val before = store.children(directory)
-        check(before.singleOrNull { it.name == original.name }?.uri == original.uri) {
-            "原文件已移动、重命名或存在同名冲突"
-        }
-        check(digest(original) == originalDigest) { "原文件在刮削过程中发生变化" }
-        journal.save(record)
+        admit(record)
         try {
-            val requestedStagedName = record.stagedName
-            val staged = store.create(directory, requestedStagedName, audioMimeType(original.extension))
-            if (staged.name != requestedStagedName && staged.name != original.name) {
-                record = record.copy(stagedName = staged.name)
-                journal.save(record)
+            val before = store.children(directory)
+            check(before.singleOrNull { it.name == original.name }?.uri == original.uri) {
+                "原文件已移动、重命名或存在同名冲突"
             }
-            check(staged.name == requestedStagedName && staged.canRename && staged.canDelete) {
-                "此提供方无法保留临时文件名称或不支持安全替换"
-            }
-            edited.inputStream().use { store.write(staged, it) }
-            check(digest(staged) == replacementDigest) { "新文件上传后校验失败，原文件未改动" }
             check(digest(original) == originalDigest) { "原文件在刮削过程中发生变化" }
-            val requestedBackupName = record.backupName
-            val backup = store.rename(original, requestedBackupName)
-            if (backup.name != requestedBackupName && backup.name != original.name) {
-                record = record.copy(backupName = backup.name)
-                journal.save(record)
+            journal.save(record)
+            try {
+                val requestedStagedName = record.stagedName
+                val staged = store.create(directory, requestedStagedName, audioMimeType(original.extension))
+                if (staged.name != requestedStagedName && staged.name != original.name) {
+                    record = record.copy(stagedName = staged.name)
+                    journal.save(record)
+                }
+                check(staged.name == requestedStagedName && staged.canRename && staged.canDelete) {
+                    "此提供方无法保留临时文件名称或不支持安全替换"
+                }
+                edited.inputStream().use { store.write(staged, it) }
+                check(digest(staged) == replacementDigest) { "新文件上传后校验失败，原文件未改动" }
+                check(digest(original) == originalDigest) { "原文件在刮削过程中发生变化" }
+                val requestedBackupName = record.backupName
+                val backup = store.rename(original, requestedBackupName)
+                if (backup.name != requestedBackupName && backup.name != original.name) {
+                    record = record.copy(backupName = backup.name)
+                    journal.save(record)
+                }
+                check(backup.name == requestedBackupName && digest(backup) == originalDigest) { "原文件暂存后校验失败" }
+                val installed = store.rename(staged, original.name)
+                if (installed.name != original.name && installed.name != record.backupName) {
+                    record = record.copy(stagedName = installed.name)
+                    journal.save(record)
+                }
+                check(installed.name == original.name && digest(installed) == replacementDigest) { "新文件提交后校验失败" }
+                check(settle(record) == Resolution.Committed)
+            } catch (error: Exception) {
+                val resolution = try {
+                    settle(record)
+                } catch (recovery: Exception) {
+                    throw IOException(
+                        "${original.name}：提交未结束，原文件或其副本已保留。请保持文件夹授权并重试恢复。\n${recovery.message}",
+                        error,
+                    ).also { it.addSuppressed(recovery) }
+                }
+                // A provider may report an error after completing a rename; verify actual contents.
+                if (resolution != Resolution.Committed) throw error
             }
-            check(backup.name == requestedBackupName && digest(backup) == originalDigest) { "原文件暂存后校验失败" }
-            val installed = store.rename(staged, original.name)
-            if (installed.name != original.name && installed.name != record.backupName) {
-                record = record.copy(stagedName = installed.name)
-                journal.save(record)
-            }
-            check(installed.name == original.name && digest(installed) == replacementDigest) { "新文件提交后校验失败" }
-            check(settle(record) == Resolution.Committed)
-        } catch (error: Exception) {
-            val resolution = try {
-                settle(record)
-            } catch (recovery: Exception) {
-                throw IOException(
-                    "${original.name}：提交未结束，原文件或其副本已保留。请保持文件夹授权并重试恢复。\n${recovery.message}",
-                    error,
-                ).also { it.addSuppressed(recovery) }
-            }
-            // A provider may report an error after completing a rename; verify actual contents.
-            if (resolution != Resolution.Committed) throw error
+        } finally {
+            synchronized(admission) { active.remove(record.id) }
         }
+    }
+
+    private fun admit(record: PendingWrite) = synchronized(admission) {
+        check(active.values.none { it.treeUri == record.treeUri &&
+            (it.originalUri == record.originalUri ||
+                it.parentUri == record.parentUri && it.originalName == record.originalName) }) {
+            "同一文件正在提交"
+        }
+        check(journal.pending().none { it.treeUri == record.treeUri && it.id !in active }) {
+            "请先完成未结束的文件恢复"
+        }
+        active[record.id] = record
     }
 
     private enum class Resolution { Committed, Restored }
