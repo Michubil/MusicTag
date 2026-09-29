@@ -44,8 +44,8 @@ $tag = "v$target"
 
 $bookmarks = @(invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T',
     'bookmarks.map(|b| b.name()).join("\n") ++ "\n"') | Where-Object { $_ })
-if ($bookmarks.Count -ne 1 -or $bookmarks[0] -cnotmatch '^(fix|feat)/[^/]+$') {
-    throw 'Current change must have exactly one fix/* or feat/* bookmark.'
+if ($bookmarks.Count -ne 1 -or $bookmarks[0] -cne 'dev') {
+    throw 'Current change must have exactly the dev bookmark.'
 }
 $bookmark = $bookmarks[0]
 $description = ((invokeCheckedNative jj @('log', '-r', '@', '--no-graph', '-T', 'description.first_line()')) -join '').Trim()
@@ -66,7 +66,7 @@ Write-Output "Current version : $($settings.Version) ($($settings.VersionCode))"
 Write-Output "Target version  : $target ($nextCode)"
 Write-Output "Candidate       : $bookmark ($candidate)"
 if ($DryRun) {
-    Write-Output "Dry run: would update Gradle, test, push $bookmark, merge its PR, then push $tag."
+    Write-Output "Dry run: would update Gradle, test, push $bookmark, merge its PR into main, then push $tag."
     return
 }
 
@@ -81,8 +81,9 @@ if ($originUrl -notmatch '^(?:https://github\.com/|git@github\.com:)([^/]+)/([^/
 $repository = "$($Matches[1])/$($Matches[2])"
 & gh auth status
 if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not authenticated; run gh auth login before releasing.' }
-$mergeOptions = ((invokeCheckedNative gh @('repo', 'view', $repository, '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed')) -join [Environment]::NewLine) | ConvertFrom-Json
-$mergeMethod = if ($mergeOptions.squashMergeAllowed) { '--squash' } elseif ($mergeOptions.mergeCommitAllowed) { '--merge' } elseif ($mergeOptions.rebaseMergeAllowed) { '--rebase' } else { throw 'Repository has no supported PR merge method.' }
+$mergeOptions = ((invokeCheckedNative gh @('repo', 'view', $repository, '--json', 'squashMergeAllowed')) -join [Environment]::NewLine) | ConvertFrom-Json
+if (-not $mergeOptions.squashMergeAllowed) { throw 'The dev branch needs squash merges; enable them for this repository.' }
+$mergeMethod = '--squash'
 invokeCheckedNative jj @('git', 'fetch', '--remote', 'origin') | Out-Null
 $latestBase = @(invokeCheckedNative jj @('log', '-r', 'main@origin & ancestors(@)', '--no-graph', '-T', 'commit_id'))
 if ($latestBase.Count -ne 1) { throw 'Candidate is behind or diverged from origin/main; synchronize it before releasing.' }
@@ -172,6 +173,10 @@ if ($localMain -ne $remoteMain) {
     if ($oldMain.Count -ne 1) { throw 'Local main diverged from fetched origin/main; inspect before tagging.' }
     invokeCheckedNative jj @('bookmark', 'move', 'main', '--to', 'main@origin') | Out-Null
 }
+# Squash 合并不把 dev 的提交带进 main，所以把 dev 重置到 main，下一次 PR 才只含新提交。
+invokeCheckedNative jj @('bookmark', 'set', 'dev', '-r', 'main@origin') | Out-Null
+invokeCheckedNative jj @('new', 'dev') | Out-Null
+Write-Output '  dev reset to main; the remote dev branch catches up on your next push.'
 $knownTags = @(invokeCheckedNative jj @('tag', 'list', '-a', '-T', 'name ++ "\n"'))
 if ($tag -in $knownTags) { throw "$tag already exists; inspect it before releasing." }
 
