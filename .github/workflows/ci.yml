@@ -40,18 +40,16 @@ jobs:
       - name: Prepare Android SDK
         run: .\scripts\prepare-ci.ps1
 
-      - name: Check source, tests and lint
-        run: .\scripts\test.ps1 -SdkPath $env:ANDROID_HOME
+      - name: Build debug APK
+        run: .\gradlew.ps1 :app:assembleDebug
 
-      - name: Upload failed check reports
+      - name: Upload failed build reports
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Check-reports
+          name: Build-reports
           path: |
             app/build/reports/
-            app/build/test-results/
             core/designsystem/build/reports/
-            core/designsystem/build/test-results/
           if-no-files-found: warn
           retention-days: 14

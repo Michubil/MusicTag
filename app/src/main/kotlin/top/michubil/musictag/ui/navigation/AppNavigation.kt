@@ -1,12 +1,15 @@
 package top.michubil.musictag.ui.navigation
 
 import android.net.Uri
+import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.currentStateAsState
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.*
@@ -141,7 +144,6 @@ private fun AppNavigation(
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route ?: Routes.Files
-    val transitions = rememberAppPageTransitions()
     val lifecycle = entry?.lifecycle?.currentStateAsState()?.value
     var pendingTab by remember { mutableStateOf<Int?>(null) }
     var fileWorkRoot by remember { mutableStateOf(Routes.Files) }
@@ -325,16 +327,7 @@ private fun AppNavigation(
         } else null,
         snackbarState = snackbar,
     ) {
-        NavHost(
-            navController = nav,
-            startDestination = Routes.Files,
-            enterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, fileWorkRoot = fileWorkRoot)) },
-            exitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, fileWorkRoot = fileWorkRoot)) },
-            popEnterTransition = { transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
-            popExitTransition = { transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
-            predictivePopEnterTransition = { _ -> transitions.enter(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
-            predictivePopExitTransition = { _ -> transitions.exit(resolvePageMotion(initialState.destination.route, targetState.destination.route, true, fileWorkRoot)) },
-        ) {
+        MusicNavHost(nav, fileWorkRoot) {
             listOf(Routes.Search, Routes.AlbumSearch).forEach { searchRoute ->
                 composable(searchRoute) {
                     LaunchedEffect(Unit) { model.activateSearch() }
@@ -364,6 +357,35 @@ private fun AppNavigation(
         }
     }
     MainDialogs(state, visibleDialog, showUpdate, model)
+}
+
+/** Shares the actual navigation transitions with gesture regression tests. */
+@Composable
+internal fun MusicNavHost(
+    nav: NavHostController,
+    fileWorkRoot: String = Routes.Files,
+    builder: NavGraphBuilder.() -> Unit,
+) {
+    val transitions = rememberAppPageTransitions()
+    fun AnimatedContentTransitionScope<NavBackStackEntry>.motion(isPop: Boolean = false): AppPageMotion =
+        resolvePageMotion(
+            initialState.destination.route,
+            targetState.destination.route,
+            // An interrupted entry can use the forward callback while seeking to the previous entry.
+            isPop || targetState.id == nav.previousBackStackEntry?.id,
+            fileWorkRoot,
+        )
+    NavHost(
+        navController = nav,
+        startDestination = Routes.Files,
+        enterTransition = { transitions.enter(motion()) },
+        exitTransition = { transitions.exit(motion()) },
+        popEnterTransition = { transitions.enter(motion(true)) },
+        popExitTransition = { transitions.exit(motion(true)) },
+        predictivePopEnterTransition = { _ -> transitions.enter(motion(true)) },
+        predictivePopExitTransition = { _ -> transitions.exit(motion(true)) },
+        builder = builder,
+    )
 }
 
 /** Freeze an outgoing folder while its exit/predictive-back transition is still on screen. */

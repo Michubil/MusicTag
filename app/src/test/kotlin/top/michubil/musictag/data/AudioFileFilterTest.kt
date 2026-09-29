@@ -4,6 +4,7 @@ import kotlinx.coroutines.*
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import top.michubil.musictag.data.storage.MusicDocument
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class AudioFileFilterTest {
@@ -31,7 +32,7 @@ class AudioFileFilterTest {
         val filter = AudioFileFilter { calls.incrementAndGet(); 60_000 }
         val known = file(1)
         val missing = file(2)
-        val durations = mutableMapOf<MusicDocument, Long>()
+        val durations = ConcurrentHashMap<MusicDocument, Long>()
         assertEquals(listOf(known, missing), filter.filter(
             listOf(known, missing), AudioFilters(20), knownDurations = mapOf(known to 30_000L),
             onDuration = { document, duration -> durations[document] = duration },
