@@ -195,21 +195,21 @@ fun OptionsPage(state: MainUiState, model: MainViewModel) {
 @Composable
 fun CandidatesPage(state: MainUiState, model: MainViewModel) {
     AppContentList {
-        if (state.candidateNotice != null) item { AppSupportingText(state.candidateNotice) }
+        state.candidateSearch.notice?.let { notice -> item { AppSupportingText(notice) } }
         when {
             state.busy -> item { AppProgress(message = "正在查找匹配歌曲") }
-            state.candidateError != null -> item {
+            state.candidateSearch.error != null -> item {
                 ErrorState(
                     title = "无法获取候选歌曲",
-                    message = state.candidateError,
+                    message = state.candidateSearch.error,
                     actionLabel = "重试",
                     onAction = { model.loadCandidates() },
                 )
             }
-            state.candidates.isEmpty() -> item {
+            state.candidateSearch.items.isEmpty() -> item {
                 EmptyState(title = "没有找到候选歌曲")
             }
-            else -> items(state.candidates, key = { it.key }) { candidate ->
+            else -> items(state.candidateSearch.items, key = { it.key }) { candidate ->
                 val artwork by produceState<ImageBitmap?>(null, candidate.key,
                     candidate.albumId, candidate.coverUrl) {
                     value = model.candidateArtwork(candidate)?.asImageBitmap()
@@ -246,7 +246,6 @@ fun SettingsPage(state: MainUiState, model: MainViewModel) {
                 }
             }
         }
-        item { AppSupportingText("搜索会查询开启的来源；选中歌曲的来源优先提供标签、歌词和封面，缺失内容再从对应的其他来源补全。可以全部关闭。") }
         item {
             PreferenceGroup(title = "音频过滤") {
                 item {
@@ -269,7 +268,7 @@ fun SettingsPage(state: MainUiState, model: MainViewModel) {
             PreferenceGroup(title = "文件操作") {
                 item {
                     SettingSwitchRow(
-                        title = "递归包含子文件夹",
+                        title = "包含子文件夹",
                         summary = "对所选文件夹执行操作时，同时处理其子文件夹中的音乐文件",
                         icon = AppIcons.Folder,
                         checked = state.recursive,
@@ -305,7 +304,7 @@ fun SettingsPage(state: MainUiState, model: MainViewModel) {
                 item {
                     SettingSwitchRow(
                         title = "格式化时间轴",
-                        summary = "三位毫秒转二位毫秒",
+                        summary = "歌词时间保留两位小数",
                         icon = AppIcons.Lyrics,
                         checked = state.formatLyricsTimeline,
                         onCheckedChange = { model.setFormatLyricsTimeline(it) },
@@ -336,7 +335,7 @@ fun AboutPage(state: MainUiState, model: MainViewModel) {
                 icon = R.drawable.ic_app,
                 name = "Music Tag",
                 summary = "本地音乐标签工具",
-                version = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                version = BuildConfig.VERSION_NAME,
                 actionLabel = if (state.checkingUpdate) "正在检查更新" else "检查更新",
                 actionEnabled = !state.checkingUpdate,
                 onAction = { model.checkUpdates() },

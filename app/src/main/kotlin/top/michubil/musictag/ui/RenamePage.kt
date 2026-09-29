@@ -12,15 +12,15 @@ fun RenamePage(state: MainUiState, model: MainViewModel) {
     AppContentList {
         item { AppSupportingText("已选择 ${state.selected.size} 项 · 使用文件现有标签，保留扩展名") }
         item {
-            AppExpandableSection(title = "命名规则", summary = "${state.renamePreset.label} · ${state.renamePattern}") {
+            AppExpandableSection(title = "命名规则", summary = "${state.rename.preset.label} · ${state.rename.pattern}") {
                 AppChoiceGrid(
                     options = RenamePreset.entries.map { AppChoiceOption(it, it.pattern.ifEmpty { it.label }) },
-                    selectedValue = state.renamePreset, enabled = !state.busy,
+                    selectedValue = state.rename.preset, enabled = !state.busy,
                     onSelect = { model.setRenamePreset(it) },
                 )
-                if (state.renamePreset == RenamePreset.CUSTOM) {
+                if (state.rename.preset == RenamePreset.CUSTOM) {
                     AppTextField(
-                        value = state.renameCustomPattern, label = "自定义模板，例如 @1-@2",
+                        value = state.rename.customPattern, label = "自定义模板，例如 @1-@2",
                         enabled = !state.busy, onValueChange = { model.setRenamePattern(it) },
                     )
                 }
@@ -33,14 +33,14 @@ fun RenamePage(state: MainUiState, model: MainViewModel) {
             }
         }
         when {
-            state.renameLoading -> item { AppProgress(message = state.renameLoadingMessage) }
-            state.renameError != null -> item { ErrorState(title = "无法生成预览", message = state.renameError) }
-            state.renameEntries.isEmpty() -> item { EmptyState(title = "没有可重命名的 FLAC、MP3 或 WAV 文件") }
+            state.rename.loading -> item { AppProgress(message = state.rename.loadingMessage) }
+            state.rename.error != null -> item { ErrorState(title = "无法生成预览", message = state.rename.error) }
+            state.rename.entries.isEmpty() -> item { EmptyState(title = "没有可重命名的 FLAC、MP3 或 WAV 文件") }
             else -> {
                 item {
-                    AppSupportingText("预览 · 待修改 ${state.renameEntries.count { it.willRename }} 个 · 跳过 ${state.renameEntries.count { it.error != null }} 个 · 无需修改 ${state.renameEntries.count { it.error == null && !it.willRename }} 个")
+                    AppSupportingText("预览 · 待修改 ${state.rename.entries.count { it.willRename }} 个 · 跳过 ${state.rename.entries.count { it.error != null }} 个 · 无需修改 ${state.rename.entries.count { it.error == null && !it.willRename }} 个")
                 }
-                items(state.renameEntries, key = { it.document.uri }) { entry ->
+                items(state.rename.entries, key = { it.document.uri }) { entry ->
                     AppContentRow(
                         title = entry.document.name,
                         summary = if (entry.error != null) "跳过：${entry.error}" else if (entry.willRename) "→ ${entry.newName}" else "文件名未变化",
@@ -56,9 +56,9 @@ fun RenamePage(state: MainUiState, model: MainViewModel) {
 @Composable
 fun RenameActions(state: MainUiState, model: MainViewModel) {
     AppActionBar(
-        primaryLabel = "重命名 ${state.renameEntries.count { it.willRename }} 个文件",
+        primaryLabel = "重命名 ${state.rename.entries.count { it.willRename }} 个文件",
         secondaryLabel = "重新读取",
-        enabled = state.canRename, secondaryEnabled = state.canEditSelection && !state.renameLoading,
+        enabled = state.canRename, secondaryEnabled = state.canEditSelection && !state.rename.loading,
         onPrimary = { model.startRenaming() }, onSecondary = { model.reloadRename() },
     )
 }

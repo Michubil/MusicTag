@@ -23,7 +23,7 @@ class BrowserStateTest {
         assertFalse(scanning.canRefresh)
         assertTrue(scanning.canOpenDirectories)
         assertFalse(ready.copy(loading = true).canOpenDirectories)
-        assertFalse(scanning.copy(busy = true).canOpenDirectories)
+        assertFalse(scanning.copy(writing = true).canOpenDirectories)
         assertFalse(scanning.copy(recoveryError = "待恢复").canOpenDirectories)
         assertFalse(scanning.copy(storageError = "读取失败").canOpenDirectories)
         assertFalse(scanning.copy(storageGranted = false).canOpenDirectories)
@@ -33,17 +33,16 @@ class BrowserStateTest {
     fun renameDefaultsToTitleThenArtistWithoutSpacesAroundTheHyphen() {
         val state = MainUiState()
 
-        assertEquals(RenamePreset.TITLE_ARTIST, state.renamePreset)
-        assertEquals("@1-@2", state.renamePattern)
-        assertEquals("@1-@2", state.renameCustomPattern)
+        assertEquals(RenamePreset.TITLE_ARTIST, state.rename.preset)
+        assertEquals("@1-@2", state.rename.pattern)
+        assertEquals("@1-@2", state.rename.customPattern)
     }
 
     @Test
     fun fileProcessingMessageIncludesCompletedAndTotalTaskCounts() {
-        val workers = top.michubil.musictag.data.LocalFileWork.parallelism
-        assertEquals("正式处理文件：已完成 0/490（最多${workers}个文件任务并行）",
+        assertEquals("正在处理文件：已完成 0/490",
             MainUiState(fileProgress = ScanProgress(0, 490)).processingMessage)
-        assertEquals("正式处理文件：已完成 490/490（最多${workers}个文件任务并行）",
+        assertEquals("正在处理文件：已完成 490/490",
             MainUiState(fileProgress = ScanProgress(490, 490)).processingMessage)
     }
 
@@ -57,7 +56,7 @@ class BrowserStateTest {
             ready.copy(editor = editor.copy(coverLoading = true)), ready.copy(editor = editor.copy(draft = top.michubil.musictag.data.edit.TagDraft())),
             ready.copy(editor = editor.copy(validation = "日期无效")), ready.copy(editor = editor.copy(error = "读取失败")),
             ready.copy(storageError = "授权失效"), ready.copy(recoveryError = "待恢复"),
-            ready.copy(busy = true), ready.copy(selected = emptySet())).forEach { assertFalse(it.canSaveTags) }
+            ready.copy(writing = true), ready.copy(selected = emptySet())).forEach { assertFalse(it.canSaveTags) }
     }
 
     @Test
@@ -66,10 +65,10 @@ class BrowserStateTest {
         val ready = MainUiState(storageGranted = true, loading = false, selected = setOf(document.uri))
         assertTrue(ready.canEditSelection)
         assertFalse(ready.canRename)
-        val preview = ready.copy(renameEntries = listOf(RenameEntry(document, "new.mp3")))
+        val preview = ready.copy(rename = RenameState(entries = listOf(RenameEntry(document, "new.mp3"))))
         assertTrue(preview.canRename)
-        listOf(preview.copy(busy = true), preview.copy(loading = true), preview.copy(renameLoading = true),
-            preview.copy(renameError = "模板错误"), preview.copy(storageError = "权限失效"),
+        listOf(preview.copy(writing = true), preview.copy(loading = true), preview.copy(rename = preview.rename.copy(loading = true)),
+            preview.copy(rename = preview.rename.copy(error = "模板错误")), preview.copy(storageError = "权限失效"),
             preview.copy(recoveryError = "待恢复"), preview.copy(selected = emptySet()),
             preview.copy(storageGranted = false)).forEach { assertFalse(it.canRename) }
     }
@@ -101,7 +100,7 @@ class BrowserStateTest {
     fun manualRefreshCannotOverlapLoadingWritingOrMissingGrant() {
         val ready = MainUiState(storageGranted = true, loading = false)
         assertFalse(ready.copy(loading = true, refreshing = true).canRefresh)
-        assertFalse(ready.copy(busy = true).canRefresh)
+        assertFalse(ready.copy(writing = true).canRefresh)
         assertFalse(ready.copy(storageGranted = false).canRefresh)
     }
 
@@ -109,10 +108,10 @@ class BrowserStateTest {
     fun writingBlocksSortTheSameWayAsManualRefresh() {
         val ready = MainUiState(storageGranted = true, loading = false)
         assertTrue(ready.canSort)
-        assertFalse(ready.copy(busy = true).canSort)
+        assertFalse(ready.copy(writing = true).canSort)
         assertFalse(ready.copy(loading = true).canSort)
         assertFalse(ready.copy(storageGranted = false).canSort)
-        assertEquals(ready.copy(busy = true).canRefresh, ready.copy(busy = true).canSort)
+        assertEquals(ready.copy(writing = true).canRefresh, ready.copy(writing = true).canSort)
     }
 
     @Test
@@ -150,7 +149,7 @@ class BrowserStateTest {
         assertTrue(searching.canSelectFiles)
         assertTrue(searching.canEditSelection)
         assertTrue(searching.canSort)
-        assertFalse(searching.copy(busy = true).canSearch)
+        assertFalse(searching.copy(writing = true).canSearch)
         assertEquals(emptyList<FileItem>(), searching.visibleItems)
         val results = MainUiState(searching = true, searchItems = listOf(FileItem(MusicDocument(savedTree, "song", savedTree, "a.flac"))))
         assertEquals(results.searchItems, results.visibleItems)

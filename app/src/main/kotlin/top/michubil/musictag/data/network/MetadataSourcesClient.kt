@@ -14,6 +14,7 @@ import top.michubil.musictag.data.match.QueryPlan
 import top.michubil.musictag.data.match.RecordingMatch
 import top.michubil.musictag.data.match.ScrapeDisposition
 import top.michubil.musictag.data.match.ScrapeKind
+import top.michubil.musictag.data.match.MatchSelection
 import top.michubil.musictag.data.match.UserQuery
 import top.michubil.musictag.data.match.bestEvidence
 import top.michubil.musictag.data.match.releaseFields
@@ -66,43 +67,26 @@ class MetadataSourcesClient(vararg clients: MusicSourceClient) {
         return CandidateSearch(decision.ranked, outcome)
     }
 
+    suspend fun relatedCandidates(track: LocalTrack, options: ScrapeOptions, selected: SongCandidate): CandidateSearch {
+        val reference = referenceTrack(track, selected)
+        val include = options.sources.enabled().filter { it != selected.source }
+        val collected = collect(reference, null, include, listOf(selected))
+        val decision = RecordingMatch.decide(reference, collected.found, null)
+        return CandidateSearch(decision.ranked, decision.outcome)
+    }
+
     suspend fun metadata(
         track: LocalTrack,
         options: ScrapeOptions,
-        forced: SongCandidate?,
-        prior: CandidateSearch? = null,
+        selection: MatchSelection,
     ): PreparedScrape {
         val selected = options.policies.filterValues { it.enabled }.keys
         if (selected.isEmpty()) return PreparedScrape(stop = ScrapeDisposition(ScrapeKind.UNCHANGED))
         blockedMessage(options)?.let { return PreparedScrape(stop = ScrapeDisposition(ScrapeKind.FAILED, it)) }
-        val search = prior ?: run {
-            if (forced == null) candidates(track, options) else {
-                val reference = referenceTrack(track, forced)
-                val include = options.sources.enabled().filter { it != forced.source }
-                val collected = collect(reference, null, include, listOf(forced))
-                val decision = RecordingMatch.decide(reference, collected.found, null)
-                CandidateSearch(decision.ranked, decision.outcome)
-            }
-        }
-        val accept = if (forced != null) MatchOutcome.Accept(forced, forced, "已手动选择") else
-            (search.outcome as? MatchOutcome.Accept) ?: search.ranked.firstOrNull()?.let { candidate ->
-                RecordingMatch.accept(track, search, candidate, "自动选择的平台歌曲").outcome as MatchOutcome.Accept
-            }
-        if (accept == null) return PreparedScrape(stop = ScrapeDisposition(ScrapeKind.FAILED, search.outcome.summary))
-        return download(track, options, selected, accept, search, forced != null)
-    }
-
-    private suspend fun download(
-        track: LocalTrack,
-        options: ScrapeOptions,
-        selected: Set<MetadataField>,
-        accept: MatchOutcome.Accept,
-        search: CandidateSearch,
-        manual: Boolean,
-    ): PreparedScrape {
-        val anchor = accept.candidate
-        val release = accept.release
-        val pool = search.ranked
+        val anchor = selection.accept.candidate
+        val release = selection.accept.release
+        val pool = selection.candidates
+        val manual = selection.manual
         val evidence = bestEvidence(track, anchor, if (manual) null else UserQuery(anchor.title, anchor.artists))
         val enabled = options.sources.enabled()
         val matches = buildMap {
