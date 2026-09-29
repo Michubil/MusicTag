@@ -23,7 +23,11 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import top.michubil.musictag.data.AppPreferences
-import top.michubil.musictag.data.MusicRepository
+import top.michubil.musictag.data.AudioFiles
+import top.michubil.musictag.data.MusicLibrary
+import top.michubil.musictag.data.MusicScraper
+import top.michubil.musictag.data.cache.MusicCache
+import top.michubil.musictag.data.storage.SafStorage
 import top.michubil.musictag.data.ThemeMode
 import top.michubil.musictag.data.match.MatchSession
 import top.michubil.musictag.data.match.ScrapeKind
@@ -33,9 +37,6 @@ import top.michubil.musictag.data.rename.RenamePreset
 import top.michubil.musictag.data.model.ScrapeOptions
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
-import top.michubil.musictag.data.rename.FilenameTemplate
-import top.michubil.musictag.data.rename.RenameInputs
-import top.michubil.musictag.data.rename.planRenames
 import top.michubil.musictag.data.AudioFilters
 import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.ScanProgress
@@ -51,7 +52,11 @@ import top.michubil.musictag.data.FileSort
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = AppPreferences(application)
-    private val repository = MusicRepository(application)
+    private val storage = SafStorage(application)
+    private val cache = MusicCache(application)
+    private val audioFiles = AudioFiles(application, storage, cache)
+    private val library = MusicLibrary(application, storage, cache, audioFiles)
+    private val scraper = MusicScraper(library, audioFiles)
     private val mutableState = MutableStateFlow(
         preferences.state.value.let { preferences ->
             preferences.applyTo(
@@ -69,26 +74,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var prunedTree: String? = null
     private var libraryJob: Job? = null
     private val libraryIndex = MutableStateFlow<LibraryIndex?>(null)
-    private var candidateJob: Job? = null
-    private var searchGeneration = 0
-    private var matchSession: MatchSession? = null
     private var authorizationJob: Job? = null
     private var updateJob: Job? = null
-    private var renameReadJob: Job? = null
-    private var renameInputs: RenameInputs? = null
     private val tagEditor = TagEditorSession(
         scope = viewModelScope,
-        readTags = repository::readTagEditorContent,
-        readCover = repository::readCover,
+        readTags = library::readTagEditorContent,
+        readCover = library::readCover,
         state = { mutableState.value.editor },
         publish = { editor -> mutableState.update { it.copy(editor = editor) } },
+        notify = { message -> mutableState.update { it.copy(message = message) } },
+    )
+    private val renameSession = RenameSession(
+        scope = viewModelScope,
+        read = library::readRenameInputs,
+        state = { mutableState.value.rename },
+        publish = { rename -> mutableState.update { it.copy(rename = rename) } },
+    )
+    private val candidateSession = CandidateSession(
+        scope = viewModelScope,
+        expand = { selection, recursive, filters -> withContext(LocalFileWork.dispatcher) {
+            library.expandSelection(selection, recursive, filters)
+        } },
+        search = { document, options -> scraper.candidates(document, options) },
+        publish = { candidates -> mutableState.update { it.copy(candidateSearch = candidates) } },
+        open = { effectChannel.send(MainEffect.OpenCandidates) },
         notify = { message -> mutableState.update { it.copy(message = message) } },
     )
     private val previewJobs = mutableMapOf<FileItem, Job>()
     private val previewSlots = Semaphore(LocalFileWork.parallelism)
     private val fileWork = ExclusiveFileWork(
         viewModelScope,
-        publishIdle = { mutableState.update { it.copy(busy = false, fileProgress = null) } },
+        publishIdle = { mutableState.update { it.copy(writing = false, fileProgress = null) } },
         afterIdle = {
             refreshDirectory()
             val snapshot = mutableState.value
@@ -217,17 +233,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setRenamePreset(preset: RenamePreset) {
-        if (!mutableState.value.busy) {
-            mutableState.update { it.copy(renamePreset = preset) }
-            updateRenamePreview()
-        }
+        if (!mutableState.value.busy) renameSession.setPreset(preset)
     }
 
     fun setRenamePattern(pattern: String) {
-        if (!mutableState.value.busy) {
-            mutableState.update { it.copy(renameCustomPattern = pattern.take(240)) }
-            updateRenamePreview()
-        }
+        if (!mutableState.value.busy) renameSession.setPattern(pattern)
     }
 
     fun showTagEditor() {
@@ -311,8 +321,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startAutomatic() { startScraping(null, null) }
 
     fun chooseCandidate(candidate: SongCandidate) {
-        if (candidate in mutableState.value.candidates) {
-            startScraping(candidate, matchSession)
+        if (candidate in mutableState.value.candidateSearch.items) {
+            startScraping(candidate, mutableState.value.candidateSearch.session)
         }
     }
 
@@ -337,8 +347,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (selection.source == source) selection.copy(enabled = enabled) else selection
             }
             preferences.setSources(selections)
-            matchSession = null
-            mutableState.update { it.copy(candidates = emptyList()) }
+            candidateSession.close()
         }
     }
 
@@ -438,7 +447,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 pruneJob?.cancel()
                 pruneJob?.join()
                 val built = withContext(LocalFileWork.dispatcher) {
-                    repository.indexLibrary(root, snapshot.audioFilters,
+                    library.indexLibrary(root, snapshot.audioFilters,
                         forceRead = snapshot.libraryRefreshing,
                         onCached = { entries ->
                             val cached = withContext(Dispatchers.Default) { LibraryIndex(entries, isCached = true) }
@@ -549,7 +558,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val previous = mutableState.value.treeUri
             try {
                 val root = withContext(LocalFileWork.dispatcher) {
-                    val selectedRoot = repository.authorizeTree(uri, flags)
+                    val selectedRoot = audioFiles.authorizeTree(uri, flags)
                     preferences.setStorageTreeUri(uri)
                     selectedRoot
                 }
@@ -571,7 +580,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         libraryLoading = false, libraryReady = false, showingCachedLibrary = false, libraryRefreshing = false, libraryProgress = null)
                 }
                 if (previous != null && previous != uri) {
-                    withContext(LocalFileWork.dispatcher) { runCatching { repository.releaseTree(previous) } }
+                    withContext(LocalFileWork.dispatcher) { runCatching { audioFiles.releaseTree(previous) } }
                 }
                 effectChannel.send(MainEffect.ResetBrowserRoot)
             } catch (error: CancellationException) {
@@ -590,7 +599,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!navigating) directoryLocations.evictAll()
         val snapshot = mutableState.value
         val tree = snapshot.treeUri
-        if (tree == null || !repository.hasGrant(tree)) {
+        if (tree == null || !storage.hasGrant(tree)) {
             pruneJob?.cancel()
             prunedTree = null
             cancelPreviewLoads()
@@ -615,16 +624,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     cancelPreviewLoads()
                     pruneJob?.cancel()
                     prunedTree = null
-                    repository.clearBrowseCache(tree)
+                    library.clearBrowseCache(tree)
                 }
                 val root = snapshot.root?.takeIf { navigating && it.treeUri == tree }
-                    ?: withContext(LocalFileWork.dispatcher) { repository.root(tree) }
+                    ?: withContext(LocalFileWork.dispatcher) { storage.root(tree) }
                 val recoveryError = if (snapshot.busy) snapshot.recoveryError else withContext(LocalFileWork.dispatcher) {
-                    runCatching { repository.recover(tree) }.exceptionOrNull()?.userMessage()
+                    runCatching { audioFiles.recover(tree) }.exceptionOrNull()?.userMessage()
                 }
                 val preferences = preferences.state.value
                 if (!userInitiated && !snapshot.busy && recoveryError == null) {
-                    repository.cachedDirectory(tree, requested ?: root.uri, preferences.fileSort,
+                    library.cachedDirectory(tree, requested ?: root.uri, preferences.fileSort,
                         preferences.sortDescending, preferences.audioFilters)?.let { cached ->
                         cancelPreviewLoads()
                         requestedDirectory = cached.directory.uri
@@ -638,13 +647,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val directory = withContext(LocalFileWork.dispatcher) {
                     if (requested == null || requested == root.uri) root
                     else runCatching {
-                        val fresh = repository.directory(tree, requested)
+                        val fresh = audioFiles.directory(tree, requested)
                         val known = directoryLocations.get(requested)?.takeIf { it.treeUri == tree && it.name == fresh.name }
                         fresh.copy(relativePath = known?.relativePath)
                     }.getOrDefault(root)
                 }
                 val documents = withContext(LocalFileWork.dispatcher) {
-                    repository.list(directory, preferences.fileSort, preferences.sortDescending, preferences.audioFilters,
+                    library.list(directory, preferences.fileSort, preferences.sortDescending, preferences.audioFilters,
                         onDirectories = { directories ->
                             withContext(Dispatchers.Main.immediate) {
                                 requestedDirectory = directory.uri
@@ -681,7 +690,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                val granted = repository.hasGrant(tree)
+                val granted = storage.hasGrant(tree)
                 if (!granted) cancelPreviewLoads()
                 mutableState.update {
                     it.copy(loading = false, refreshing = false, scanProgress = null, showingCachedContent = it.showingCachedContent && granted,
@@ -713,7 +722,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         previewJobs[item] = viewModelScope.launch {
             try {
                 previewSlots.withPermit {
-                    repository.preview(
+                    library.preview(
                         item.document,
                         cachedOnly = snapshot.isCachedPreview(item),
                     ) { preview ->
@@ -731,59 +740,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun cancelRenamePreview() {
-        renameReadJob?.cancel()
-        renameReadJob = null
-        renameInputs = null
-        mutableState.update { it.copy(renameLoading = false, renameReadProgress = null, renameEntries = emptyList(), renameError = null) }
-    }
+    fun cancelRenamePreview() { renameSession.close() }
 
     fun reloadRename() {
-        if (!mutableState.value.canEditSelection) return
-        cancelRenamePreview()
         val snapshot = mutableState.value
-        mutableState.update { it.copy(renameLoading = true) }
-        renameReadJob = viewModelScope.launch {
-            try {
-                renameInputs = repository.readRenameInputs(
-                    snapshot.selectedDocuments(),
-                    snapshot.recursive,
-                    snapshot.audioFilters,
-                    onProgress = { progress -> mutableState.update { it.copy(renameReadProgress = progress) } },
-                )
-                mutableState.update { it.copy(renameLoading = false) }
-                updateRenamePreview()
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                mutableState.update { it.copy(renameLoading = false, renameError = error.userMessage()) }
-            }
+        if (snapshot.canEditSelection) {
+            renameSession.load(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
         }
-    }
-
-    private fun updateRenamePreview() {
-        val snapshot = mutableState.value
-        val template = runCatching { FilenameTemplate(snapshot.renamePattern) }
-        if (template.isFailure) {
-            mutableState.update { it.copy(renameEntries = emptyList(), renameError = template.exceptionOrNull()?.userMessage()) }
-            return
-        }
-        val inputs = renameInputs ?: return
-        val entries = planRenames(inputs, template.getOrThrow())
-        mutableState.update { it.copy(renameEntries = entries, renameError = null) }
     }
 
     fun startRenaming() {
         val snapshot = mutableState.value
         if (!snapshot.canRename) return
-        val entries = snapshot.renameEntries.filter { it.willRename }
-        val skipped = snapshot.renameEntries.count { it.error != null }
-        val unchanged = snapshot.renameEntries.count { it.error == null && !it.willRename }
-        mutableState.update { it.copy(busy = true, selected = emptySet(), fileProgress = ScanProgress(0, entries.size)) }
+        val entries = snapshot.rename.entries.filter { it.willRename }
+        val skipped = snapshot.rename.entries.count { it.error != null }
+        val unchanged = snapshot.rename.entries.count { it.error == null && !it.willRename }
+        mutableState.update { it.copy(writing = true, selected = emptySet(), fileProgress = ScanProgress(0, entries.size)) }
         fileWork.launch {
             effectChannel.send(MainEffect.ReturnToBrowser)
             val outcomes = mapFileResults(entries, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { entry ->
-                repository.rename(entry)
+                audioFiles.rename(entry)
             }
             val (success, failures) = summarizeFileResults(entries, outcomes) { it.document.name }
             val result = "重命名完成：成功 $success 个，未更改 $unchanged 个，跳过 $skipped 个，失败 ${failures.size} 个"
@@ -792,62 +768,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun cancelCandidateSearch() {
-        searchGeneration++
-        val searching = candidateJob?.isActive == true
-        candidateJob?.cancel()
-        candidateJob = null
-        mutableState.update {
-            it.copy(candidates = emptyList(), candidateNotice = null,
-                candidateError = null, busy = if (searching) false else it.busy)
-        }
-    }
+    fun cancelCandidateSearch() { candidateSession.close() }
 
-    fun loadCandidates() = loadCandidates(null)
+    suspend fun candidateArtwork(candidate: SongCandidate) = scraper.candidateArtwork(candidate)
 
-    suspend fun candidateArtwork(candidate: SongCandidate) = repository.candidateArtwork(candidate)
-
-    private fun loadCandidates(documents: List<MusicDocument>? = null) {
-        if (!mutableState.value.canEditSelection) return
+    fun loadCandidates() {
         val snapshot = mutableState.value
-        if (snapshot.policies.values.none { it.enabled }) return
+        if (!snapshot.canScrape) return
         val options = snapshot.toScrapeOptions()
-        repository.blockedMessage(options)?.let { reason ->
+        scraper.sources.blockedMessage(options)?.let { reason ->
             mutableState.update { it.copy(message = reason) }
             return
         }
-        val generation = ++searchGeneration
-        candidateJob?.cancel()
-        mutableState.update {
-            it.copy(busy = true, fileProgress = null, candidates = emptyList(),
-                candidateNotice = null, candidateError = null)
-        }
-        candidateJob = viewModelScope.launch {
-            try {
-                val files = documents ?: withContext(LocalFileWork.dispatcher) {
-                    repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
-                }
-                if (files.size != 1) {
-                    mutableState.update { it.copy(busy = false, message = "手动匹配时请选择一个 FLAC、MP3 或 WAV 文件") }
-                    return@launch
-                }
-                effectChannel.send(MainEffect.OpenCandidates)
-                val file = files.single()
-                val search = repository.candidates(file, options)
-                if (generation != searchGeneration) return@launch
-                matchSession = MatchSession(file.uri, file.size, file.modified, options.sources, options.policies, search)
-                val notice = search.outcome.summary.takeUnless { search.ranked.isNotEmpty() && search.outcome is top.michubil.musictag.data.match.MatchOutcome.Accept }
-                mutableState.update {
-                    it.copy(candidates = search.ranked, candidateNotice = notice,
-                        busy = false)
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                if (generation != searchGeneration) return@launch
-                mutableState.update { it.copy(busy = false, candidateError = error.userMessage(), message = error.userMessage()) }
-            }
-        }
+        candidateSession.load(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters, options)
     }
 
     private fun startScraping(candidate: SongCandidate?, session: MatchSession?) {
@@ -855,15 +788,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val snapshot = mutableState.value
         if (snapshot.policies.values.none { it.enabled }) return
         val options = snapshot.toScrapeOptions()
-        repository.blockedMessage(options)?.let { reason ->
+        scraper.sources.blockedMessage(options)?.let { reason ->
             mutableState.update { it.copy(message = reason) }
             return
         }
-        mutableState.update { it.copy(busy = true, fileProgress = null) }
+        mutableState.update { it.copy(writing = true, fileProgress = null) }
         fileWork.launch {
             try {
                 val files = withContext(LocalFileWork.dispatcher) {
-                    repository.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
+                    library.expandSelection(snapshot.selectedDocuments(), snapshot.recursive, snapshot.audioFilters)
                 }
                 if (files.isEmpty() || (candidate != null && files.size != 1)) {
                     mutableState.update { it.copy(message = "所选文件已不可用或没有 FLAC、MP3、WAV 文件") }
@@ -871,7 +804,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 mutableState.update { it.copy(selected = emptySet(), fileProgress = ScanProgress(0, files.size)) }
                 effectChannel.send(MainEffect.ReturnToBrowser)
-                val outcomes = repository.scrape(files, options, candidate, session, onProgress = { progress ->
+                val outcomes = scraper.scrape(files, options, candidate, session, onProgress = { progress ->
                     mutableState.update { it.copy(fileProgress = progress) }
                 }).map { result ->
                     result.getOrElse { error ->
@@ -905,7 +838,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (prunedTree == root.treeUri || pruneJob?.isActive == true || libraryJob?.isActive == true) return
         pruneJob = viewModelScope.launch {
             try {
-                withContext(LocalFileWork.dispatcher) { repository.pruneMissingCacheEntries(root) }
+                withContext(LocalFileWork.dispatcher) { library.pruneMissingCacheEntries(root) }
                 prunedTree = root.treeUri
             } catch (error: CancellationException) {
                 throw error
@@ -939,11 +872,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!snapshot.canSaveTags) return
         val request = tagEditor.prepareSave() ?: return
         val sources = request.sources
-        mutableState.update { it.copy(busy = true, selected = emptySet(), fileProgress = ScanProgress(0, sources.size)) }
+        mutableState.update { it.copy(writing = true, selected = emptySet(), fileProgress = ScanProgress(0, sources.size)) }
         fileWork.launch {
             effectChannel.send(MainEffect.ReturnToBrowser)
             val outcomes = mapFileResults(sources, onProgress = { progress -> mutableState.update { it.copy(fileProgress = progress) } }) { source ->
-                repository.editTags(source, request.mutation)
+                audioFiles.editTags(source, request.mutation)
             }
             val (success, failures) = summarizeFileResults(sources, outcomes) { it.document.name }
             mutableState.update { it.copy(message = "标签保存完成：成功 $success 个，跳过 ${request.skipped} 个，失败 ${failures.size} 个" +

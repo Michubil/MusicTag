@@ -13,12 +13,13 @@ import kotlin.time.TimeSource
 
 data class ScanProgress(val completed: Int, val total: Int)
 
-/** Shared local I/O budget for bounded file tasks. */
+/** Shared runnable I/O limit; each map invocation separately bounds its in-flight file tasks. */
 internal object LocalFileWork {
     const val parallelism = 6
     val dispatcher = Dispatchers.IO.limitedParallelism(parallelism)
 
-    // A fixed number of workers keeps large batches from creating a coroutine/copy per file.
+    // At most six workers per invocation, including suspended workers waiting for network or SAF.
+    // The dispatcher limits runnable work, not the lifetime or HTTP fan-out of those workers.
     // Each worker owns its result slot, and joining publishes results in the original order.
     suspend fun <T, R> map(
         items: List<T>,

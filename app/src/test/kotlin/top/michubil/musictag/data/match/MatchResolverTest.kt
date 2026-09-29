@@ -12,7 +12,7 @@ import top.michubil.musictag.data.model.MusicSource
 import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.network.FingerprintSuggestion
 
-class AutomaticMatchResolverTest {
+class MatchResolverTest {
     private val track = LocalTrack("random.wav", "Wrong title", listOf("Wrong artist"), null, 180_000)
     private val correct = SongCandidate(1, "Correct song", listOf("Singer"), "Album", null,
         180_000, null, null, 1, MusicSource.NETEASE)
@@ -25,7 +25,7 @@ class AutomaticMatchResolverTest {
     @Test
     fun fingerprintRecoversIdentityWhenTagsAndFilenameAreWrong() = runBlocking {
         val queries = mutableListOf<UserQuery?>()
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = track,
             search = { query ->
                 queries += query
@@ -41,7 +41,7 @@ class AutomaticMatchResolverTest {
     @Test
     fun competingFingerprintRecordingsUseFirstHint() = runBlocking {
         val other = correct.copy(id = 2, title = "Different song")
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = track,
             search = { query -> found(if (query?.title == other.title) other else correct, query) },
             recognize = {
@@ -60,7 +60,7 @@ class AutomaticMatchResolverTest {
         val lowerStarted = CompletableDeferred<Unit>()
         var lowerCancelled = false
         val result = withTimeout(5_000) {
-            AutomaticMatchResolver.resolve(
+            MatchResolver.resolve(
                 track = track,
                 search = { query ->
                     when (query?.title) {
@@ -92,7 +92,7 @@ class AutomaticMatchResolverTest {
         val lowerCompleted = CompletableDeferred<Unit>()
         val other = correct.copy(id = 2, title = "Other song")
         val result = withTimeout(5_000) {
-            AutomaticMatchResolver.resolve(
+            MatchResolver.resolve(
                 track = track,
                 search = { query ->
                     when (query?.title) {
@@ -118,7 +118,7 @@ class AutomaticMatchResolverTest {
         val wrong = correct.copy(id = 2, title = track.title!!, artists = track.artists)
         val queries = mutableListOf<UserQuery?>()
         val text = CandidateSearch(listOf(wrong, correct), MatchOutcome.Accept(wrong, wrong, "文字匹配"))
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = track,
             search = { query -> queries += query; text },
             recognize = { listOf(FingerprintSuggestion(correct.title, correct.artists, 0.9)) },
@@ -133,7 +133,7 @@ class AutomaticMatchResolverTest {
         val acceptedTrack = track.copy(title = correct.title, artists = correct.artists)
         val text = found(correct, null, acceptedTrack)
         var lookedUp = false
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = acceptedTrack,
             search = { text },
             recognize = {
@@ -153,7 +153,7 @@ class AutomaticMatchResolverTest {
             artists = wrong.artists)
         val queries = mutableListOf<UserQuery?>()
 
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = wrongTrack,
             search = { query ->
                 queries += query
@@ -177,7 +177,7 @@ class AutomaticMatchResolverTest {
             listOf(FoundCandidate(correct, 0), FoundCandidate(competing, 1)), query)
         assertTrue(fingerprintSearch.outcome is MatchOutcome.Review)
 
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = wrongTrack,
             search = { if (it == null) found(wrong, null, wrongTrack) else
                 CandidateSearch(fingerprintSearch.ranked, fingerprintSearch.outcome) },
@@ -192,7 +192,7 @@ class AutomaticMatchResolverTest {
         val acceptedTrack = track.copy(title = correct.title, artists = correct.artists)
         val text = found(correct, null, acceptedTrack)
 
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = acceptedTrack,
             search = { text },
             recognize = { error("AcoustID unavailable") },
@@ -204,7 +204,7 @@ class AutomaticMatchResolverTest {
     @Test
     fun unavailableFingerprintUsesFirstTextCandidate() = runBlocking {
         val queries = mutableListOf<UserQuery?>()
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = track,
             search = { query ->
                 queries += query
@@ -223,7 +223,7 @@ class AutomaticMatchResolverTest {
         val text = found(correct, null, acceptedTrack)
         val other = correct.copy(id = 2, title = "Different song")
 
-        val result = AutomaticMatchResolver.resolve(
+        val result = MatchResolver.resolve(
             track = acceptedTrack,
             search = { query -> if (query == null) text else found(correct, query, acceptedTrack) },
             recognize = { listOf(FingerprintSuggestion(other.title, other.artists, 0.9)) },
@@ -234,7 +234,7 @@ class AutomaticMatchResolverTest {
 
     @Test
     fun noPlatformCandidateReturnsNoMatchWithoutReview() = runBlocking {
-        val result = AutomaticMatchResolver.resolve(track,
+        val result = MatchResolver.resolve(track,
             search = { CandidateSearch(emptyList(), MatchOutcome.None("没有合适候选")) },
             recognize = { emptyList() })
 

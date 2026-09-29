@@ -125,7 +125,7 @@ class AppNavigationTest {
         assertFalse(shouldReturnToBrowser(Routes.Candidates, selected))
         assertFalse(shouldReturnToBrowser(Routes.Rename, selected))
         assertFalse(shouldReturnToBrowser(Routes.Editor, selected))
-        val writing = selected.copy(selected = emptySet(), busy = true)
+        val writing = selected.copy(selected = emptySet(), writing = true)
         assertFalse(shouldReturnToBrowser(Routes.Options, writing))
         assertFalse(shouldReturnToBrowser(Routes.Candidates, writing))
         assertFalse(shouldReturnToBrowser(Routes.Rename, writing))

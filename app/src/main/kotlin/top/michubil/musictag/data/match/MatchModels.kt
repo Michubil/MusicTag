@@ -24,6 +24,13 @@ data class CandidateSearch(
     val outcome: MatchOutcome,
 )
 
+/** A fixed identity and candidate pool; field completion cannot choose a different song. */
+data class MatchSelection(
+    val accept: MatchOutcome.Accept,
+    val candidates: List<SongCandidate>,
+    val manual: Boolean,
+)
+
 enum class ScrapeKind { COMPLETE, PARTIAL, UNCHANGED, FAILED }
 
 data class ScrapeDisposition(val kind: ScrapeKind, val reason: String? = null)

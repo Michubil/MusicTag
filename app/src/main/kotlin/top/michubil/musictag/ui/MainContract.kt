@@ -1,17 +1,13 @@
 package top.michubil.musictag.ui
 
 import top.michubil.musictag.data.AudioFilters
-import top.michubil.musictag.data.LocalFileWork
 import top.michubil.musictag.data.ScanProgress
 import top.michubil.musictag.data.FileSort
 import top.michubil.musictag.data.ThemeMode
 import top.michubil.musictag.data.model.FieldPolicy
 import top.michubil.musictag.data.model.MetadataField
 import top.michubil.musictag.data.model.ScrapeSources
-import top.michubil.musictag.data.model.SongCandidate
 import top.michubil.musictag.data.storage.MusicDocument
-import top.michubil.musictag.data.rename.RenameEntry
-import top.michubil.musictag.data.rename.RenamePreset
 import top.michubil.musictag.data.AlbumGroup
 import top.michubil.musictag.data.AppRelease
 import top.michubil.musictag.data.AlbumSort
@@ -31,22 +27,15 @@ data class MainUiState(
     val editor: TagEditorState = TagEditorState(),
     val audioFilters: AudioFilters = AudioFilters(),
     val dialog: MainDialog? = null,
-    val renamePreset: RenamePreset = RenamePreset.TITLE_ARTIST,
-    val renameCustomPattern: String = "@1-@2",
-    val renameLoading: Boolean = false,
-    val renameReadProgress: ScanProgress? = null,
-    val renameEntries: List<RenameEntry> = emptyList(),
-    val renameError: String? = null,
+    val rename: RenameState = RenameState(),
     val policies: Map<MetadataField, FieldPolicy> = MetadataField.entries.associateWith { FieldPolicy() },
     val recursive: Boolean = false,
-    val candidates: List<SongCandidate> = emptyList(),
-    val candidateNotice: String? = null,
-    val candidateError: String? = null,
+    val candidateSearch: CandidateState = CandidateState(),
     val loading: Boolean = true,
     val showingCachedContent: Boolean = false,
     val refreshing: Boolean = false,
     val scanProgress: ScanProgress? = null,
-    val busy: Boolean = false,
+    val writing: Boolean = false,
     val fileProgress: ScanProgress? = null,
     val storageGranted: Boolean = false,
     val storageError: String? = null,
@@ -77,6 +66,7 @@ data class MainUiState(
     val displayedAlbumSort: AlbumSort = AlbumSort.TITLE,
     val albumMinColumns: Int = 3,
 ) {
+    val busy: Boolean get() = writing || candidateSearch.loading
     val showStoragePicker: Boolean get() = !loading && !storageGranted
     val canRefresh: Boolean get() = storageGranted && !loading && !busy
     val canSearch: Boolean get() = storageGranted && !busy && root != null && storageError == null && recoveryError == null
@@ -103,16 +93,12 @@ data class MainUiState(
     val loadingMessage: String get() = scanProgress?.let { "正在筛选音频 ${it.completed} / ${it.total}" }
         ?: "正在读取音乐文件夹"
     val processingMessage: String get() = fileProgress?.let {
-        "正式处理文件：已完成 ${it.completed}/${it.total}（最多${minOf(it.total, LocalFileWork.parallelism)}个文件任务并行）"
+        "正在处理文件：已完成 ${it.completed}/${it.total}"
     }
-        ?: "正在准备文件任务"
-    val renameLoadingMessage: String get() = renameReadProgress?.let {
-        if (it.completed == it.total) "正在检查文件名" else "正在读取标签(${it.completed}/${it.total})"
-    } ?: "正在准备标签读取"
+        ?: "正在准备处理"
     val canEditSelection: Boolean get() = canSelectFiles && selected.isNotEmpty()
     val canScrape: Boolean get() = policies.values.any { it.enabled } && canEditSelection
-    val renamePattern: String get() = if (renamePreset == RenamePreset.CUSTOM) renameCustomPattern else renamePreset.pattern
-    val canRename: Boolean get() = canEditSelection && !renameLoading && renameError == null && renameEntries.any { it.willRename }
+    val canRename: Boolean get() = canEditSelection && rename.canApply
     val canSaveTags: Boolean get() = canEditSelection && editor.canSave
 }
 
