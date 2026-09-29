@@ -28,8 +28,8 @@ android {
         applicationId = "top.michubil.musictag"
         minSdk = 35
         targetSdk = 37
-        versionCode = 35
-        versionName = "1.3.1"
+        versionCode = 36
+        versionName = "1.3.2"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -67,6 +67,10 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     androidResources {
         localeFilters += listOf("en", "zh-rCN")
     }
@@ -86,6 +90,8 @@ android {
     }
 
     lint {
+        // scripts/test.ps1 runs full lint locally before release preparation pushes the candidate.
+        checkReleaseBuilds = false
         // Dependency upgrades are deliberate; publishing a newer version must not break this build.
         disable += listOf("ChromeOsAbiSupport", "LockedOrientationActivity", "DiscouragedApi",
             "GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
@@ -136,6 +142,8 @@ dependencies {
     implementation(libs.androidx.compose.runtime)
     implementation(libs.androidx.compose.ui)
 
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.junit4)
     testImplementation(libs.robolectric)
